@@ -10,3 +10,8 @@
     (if (slime-connected-p)
         (slime-switch-to-output-buffer)
       (slime))))
+(defun slime-no-qlot ()
+  "Run slime without qlot"
+  (interactive)
+  (setf slime-default-lisp 'roswell-no-qlot)
+  (slime))
