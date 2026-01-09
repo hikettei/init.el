@@ -107,6 +107,11 @@
   "Face for Codex agent."
   :group 'session-wizard)
 
+(defface sw-agent-none-face
+  '((t :foreground "#6272a4" :weight bold))
+  "Face for No Agent option."
+  :group 'session-wizard)
+
 (defface sw-button-face
   '((t :foreground "#50fa7b" :background "#44475a" :box (:line-width -2 :color "#50fa7b") :weight bold))
   "Face for buttons."
@@ -152,6 +157,7 @@
    ((string= color-hex "#ff9f43") 'sw-agent-claude-face)
    ((string= color-hex "#48dbfb") 'sw-agent-gemini-face)
    ((string= color-hex "#0abf53") 'sw-agent-codex-face)
+   ((string= color-hex "#6272a4") 'sw-agent-none-face)
    (t `(:foreground ,color-hex :weight bold))))
 
 (defun sw--load-agent-from-json (file)
@@ -179,6 +185,17 @@
                            :mcp-enabled mcp-enabled
                            :config-file file)))))))
 
+(defconst sw--no-agent-entry
+  '("None" :icon "📝"
+           :color sw-agent-none-face
+           :desc "No AI Agent - Use as a normal text editor"
+           :executable nil
+           :args nil
+           :resume-args nil
+           :mcp-enabled nil
+           :config-file nil)
+  "Special entry for 'No AI Agent' option.")
+
 (defun sw--load-agents ()
   "Load all agent configurations from `sw-agents-directory'."
   (let ((dir (expand-file-name sw-agents-directory)))
@@ -187,8 +204,10 @@
     (let ((files (directory-files dir t "\\.json$")))
       (unless files
         (error "No agent configuration files (.json) found in %s" dir))
+      ;; Load agents from JSON files, then add "None" option at the end
       (setq sw--agents
-            (delq nil (mapcar #'sw--load-agent-from-json files)))))
+            (append (delq nil (mapcar #'sw--load-agent-from-json files))
+                    (list sw--no-agent-entry)))))
   sw--agents)
 
 (defvar sw--current-agent 0
@@ -218,6 +237,16 @@ Each entry is (workspace . session-data).")
 
 (defvar sw--selected-session-idx 0
   "Currently selected session index in the flat list.")
+
+;;; ============================================================
+;;; Utility Functions
+;;; ============================================================
+
+(defun sw--is-no-agent-selected ()
+  "Return t if 'None' agent is currently selected."
+  (let* ((agent-data (nth sw--current-agent sw--agents))
+         (agent-name (car agent-data)))
+    (string= agent-name "None")))
 
 ;;; ============================================================
 ;;; Workspace Search
@@ -514,7 +543,9 @@ Each entry is (workspace . session-data).")
   (insert (propertize (format "   %-77s" "Select AI Agent") 'face 'sw-section-cyan-face))
   (insert "\n")
   (if (eq sw--current-field 'agent)
-      (insert (propertize "   ↑/↓ to select, TAB to continue" 'face 'sw-hint-face))
+      (if (sw--is-no-agent-selected)
+          (insert (propertize "   ↑/↓ to select, TAB/RET to start editor" 'face 'sw-hint-face))
+        (insert (propertize "   ↑/↓ to select, TAB to continue" 'face 'sw-hint-face)))
     (insert (propertize "   TAB to focus" 'face 'sw-hint-face)))
   (insert "\n\n")
   ;; Top line before first card
@@ -637,16 +668,50 @@ Each entry is (workspace . session-data).")
 ;;; Navigation
 ;;; ============================================================
 
+(defun sw--start-editor-mode ()
+  "Start Emacs as a normal text editor without AI agent."
+  (sw--stop-nyan-animation)
+  (kill-buffer sw--buffer-name)
+  (when (get-buffer "*Restore Session*")
+    (kill-buffer "*Restore Session*"))
+  (delete-other-windows)
+
+  ;; Setup layout: neotree + main editor + terminal at bottom
+  ;; Show neotree on the left
+  (when (fboundp 'neotree-show)
+    (neotree-show)
+    (setq neo-window-width 40))
+
+  ;; Split for terminal at bottom (4/5 editor, 1/5 terminal)
+  (other-window 1)  ; Move to main window (right of neotree)
+  (let ((height (/ (window-body-height) 5)))
+    (split-window-vertically (* 4 height)))
+
+  ;; Open terminal in bottom window
+  (other-window 1)
+  (cond
+   ((fboundp 'vterm) (vterm))
+   ((fboundp 'multi-term) (multi-term))
+   (t (term "/bin/zsh")))
+
+  ;; Return to main editor window
+  (other-window -1)
+  (switch-to-buffer "*scratch*")
+  (message "Editor mode - No AI agent"))
+
 (defun sw--next-field ()
   "Move to the next field."
   (interactive)
-  (setq sw--current-field
-        (pcase sw--current-field
-          ('agent 'title)
-          ('title 'workspace)
-          ('workspace 'buttons)
-          ('buttons 'agent)))
-  (sw--render))
+  ;; If "None" is selected and we're on agent field, skip to editor mode
+  (if (and (eq sw--current-field 'agent) (sw--is-no-agent-selected))
+      (sw--start-editor-mode)
+    (setq sw--current-field
+          (pcase sw--current-field
+            ('agent 'title)
+            ('title 'workspace)
+            ('workspace 'buttons)
+            ('buttons 'agent)))
+    (sw--render)))
 
 (defun sw--prev-field ()
   "Move to the previous field."
@@ -677,6 +742,10 @@ Each entry is (workspace . session-data).")
   "Edit the currently focused field."
   (interactive)
   (pcase sw--current-field
+    ('agent
+     ;; If "None" is selected, start editor mode
+     (when (sw--is-no-agent-selected)
+       (sw--start-editor-mode)))
     ('title
      (setq sw--session-title
            (read-string "Session Title: " sw--session-title))
@@ -690,8 +759,7 @@ Each entry is (workspace . session-data).")
      (sw--refresh-info-buffer)
      (sw--render))
     ('buttons
-     (sw--create-session))
-    ('agent nil)))
+     (sw--create-session))))
 
 ;;; ============================================================
 ;;; Actions

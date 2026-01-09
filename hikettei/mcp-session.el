@@ -362,22 +362,23 @@ Layout:
     (other-window -1)  ; back to main
     (split-window-below (- (window-height) 15))
     (other-window 1)
-    (cond
-     ((fboundp 'vterm)
-      (vterm)
-      (vterm-send-string (format "cd %s && %s\n"
-                                 (shell-quote-argument workspace)
-                                 agent-cmd)))
-     ((fboundp 'multi-term)
-      (multi-term)
-      (term-send-raw-string (format "cd %s && %s\n"
-                                    (shell-quote-argument workspace)
-                                    agent-cmd)))
-     (t
-      (term "/bin/zsh")
-      (term-send-raw-string (format "cd %s && %s\n"
-                                    (shell-quote-argument workspace)
-                                    agent-cmd))))
+    (let ((cmd (format "cd %s && %s" (shell-quote-argument workspace) agent-cmd)))
+      (cond
+       ((fboundp 'vterm)
+        (vterm)
+        ;; Wait for vterm to initialize before sending command
+        (run-at-time 0.1 nil
+                     (lambda (c)
+                       (when (and (boundp 'vterm--process)
+                                  vterm--process)
+                         (vterm-send-string (concat c "\n"))))
+                     cmd))
+       ((fboundp 'multi-term)
+        (multi-term)
+        (term-send-raw-string (concat cmd "\n")))
+       (t
+        (term "/bin/zsh")
+        (term-send-raw-string (concat cmd "\n")))))
 
     ;; Return to main window
     (other-window -1)
