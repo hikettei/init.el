@@ -18,6 +18,7 @@
 ;;; Code:
 
 (require 'cl-lib)
+(require 'json)
 
 ;;; ============================================================
 ;;; Customization
@@ -56,11 +57,13 @@
   "Structure representing an AI development session."
   id                    ; Unique session ID
   title                 ; Session title
-  agent                 ; AI agent (Claude, Gemini, Codex)
+  agent                 ; AI agent name (Claude, Gemini, Codex)
+  agent-config          ; Agent config plist from JSON
   workspace             ; Workspace directory path
   mcp-process           ; MCP server process
   tab-index             ; Tab-bar index
   created-at            ; Creation timestamp
+  session-id            ; Agent's session ID for resume
   buffers)              ; List of session-related buffers
 
 (defvar ai-session--sessions (make-hash-table :test 'equal)
@@ -88,6 +91,102 @@
 (defun ai-session--unregister (session)
   "Unregister SESSION from the session table."
   (remhash (ai-session-id session) ai-session--sessions))
+
+;;; ============================================================
+;;; Session Persistence
+;;; ============================================================
+
+(defconst ai-session--hikettei-dir ".hikettei"
+  "Directory name for session data within workspace.")
+
+(defconst ai-session--sessions-file "sessions.json"
+  "Filename for session history.")
+
+(defun ai-session--ensure-hikettei-dir (workspace)
+  "Ensure .hikettei directory exists in WORKSPACE."
+  (let ((dir (expand-file-name ai-session--hikettei-dir workspace)))
+    (unless (file-directory-p dir)
+      (make-directory dir t))
+    dir))
+
+(defun ai-session--sessions-file-path (workspace)
+  "Get the sessions.json file path for WORKSPACE."
+  (expand-file-name ai-session--sessions-file
+                    (expand-file-name ai-session--hikettei-dir workspace)))
+
+(defun ai-session--load-workspace-sessions (workspace)
+  "Load session history from WORKSPACE."
+  (let ((file (ai-session--sessions-file-path workspace)))
+    (if (file-exists-p file)
+        (condition-case err
+            (let ((json-object-type 'alist)
+                  (json-array-type 'list)
+                  (json-key-type 'symbol))
+              (cdr (assoc 'sessions (json-read-file file))))
+          (error
+           (message "Error loading sessions: %s" (error-message-string err))
+           nil))
+      nil)))
+
+(defun ai-session--save-workspace-sessions (workspace sessions)
+  "Save SESSIONS list to WORKSPACE."
+  (ai-session--ensure-hikettei-dir workspace)
+  (let ((file (ai-session--sessions-file-path workspace))
+        (json-encoding-pretty-print t))
+    (with-temp-file file
+      (insert (json-encode `((sessions . ,sessions)))))))
+
+(defun ai-session--add-to-history (session)
+  "Add SESSION to workspace history."
+  (let* ((workspace (ai-session-workspace session))
+         (existing (ai-session--load-workspace-sessions workspace))
+         (entry `((id . ,(ai-session-id session))
+                  (agent . ,(ai-session-agent session))
+                  (title . ,(ai-session-title session))
+                  (created_at . ,(format-time-string "%Y-%m-%dT%H:%M:%S"
+                                                     (ai-session-created-at session)))
+                  (last_accessed . ,(format-time-string "%Y-%m-%dT%H:%M:%S"))
+                  (session_id . ,(ai-session-session-id session))))
+         (updated (cons entry (seq-remove (lambda (e)
+                                            (string= (cdr (assoc 'id e))
+                                                     (ai-session-id session)))
+                                          existing))))
+    (ai-session--save-workspace-sessions workspace updated)))
+
+(defun ai-session--update-last-accessed (session)
+  "Update last_accessed timestamp for SESSION in history."
+  (let* ((workspace (ai-session-workspace session))
+         (sessions (ai-session--load-workspace-sessions workspace))
+         (updated (mapcar (lambda (entry)
+                            (if (string= (cdr (assoc 'id entry))
+                                         (ai-session-id session))
+                                (cons `(last_accessed . ,(format-time-string "%Y-%m-%dT%H:%M:%S"))
+                                      (assq-delete-all 'last_accessed entry))
+                              entry))
+                          sessions)))
+    (ai-session--save-workspace-sessions workspace updated)))
+
+(defun ai-session--update-session-id (session new-session-id)
+  "Update SESSION's session_id to NEW-SESSION-ID in history."
+  (setf (ai-session-session-id session) new-session-id)
+  (let* ((workspace (ai-session-workspace session))
+         (sessions (ai-session--load-workspace-sessions workspace))
+         (updated (mapcar (lambda (entry)
+                            (if (string= (cdr (assoc 'id entry))
+                                         (ai-session-id session))
+                                (cons `(session_id . ,new-session-id)
+                                      (assq-delete-all 'session_id entry))
+                              entry))
+                          sessions)))
+    (ai-session--save-workspace-sessions workspace updated)))
+
+(defun ai-session--delete-from-history (workspace session-id)
+  "Delete session SESSION-ID from WORKSPACE history."
+  (let* ((sessions (ai-session--load-workspace-sessions workspace))
+         (updated (seq-remove (lambda (e)
+                                (string= (cdr (assoc 'id e)) session-id))
+                              sessions)))
+    (ai-session--save-workspace-sessions workspace updated)))
 
 ;;; ============================================================
 ;;; MCP Server Management
@@ -149,8 +248,27 @@
 ;;; Multi-pane Layout
 ;;; ============================================================
 
-(defun ai-session--setup-layout (session)
+(defun ai-session--build-agent-command (session &optional resume)
+  "Build the command string to launch agent for SESSION.
+If RESUME is non-nil, use resume_args with session_id."
+  (let* ((config (ai-session-agent-config session))
+         (executable (plist-get config :executable))
+         (args (if resume
+                   (plist-get config :resume-args)
+                 (plist-get config :args)))
+         (session-id (ai-session-session-id session)))
+    (if resume
+        (format "%s %s %s"
+                executable
+                (mapconcat #'identity args " ")
+                (or session-id ""))
+      (format "%s %s"
+              executable
+              (mapconcat #'identity args " ")))))
+
+(defun ai-session--setup-layout (session &optional resume)
   "Setup multi-pane layout for SESSION.
+If RESUME is non-nil, resume existing session.
 Layout:
 +------------------+------------------+
 |                  |                  |
@@ -164,18 +282,20 @@ Layout:
 
   (let* ((workspace (ai-session-workspace session))
          (main-buffer (get-buffer-create
-                       (format "*Session: %s*" (ai-session-title session)))))
+                       (format "*Session: %s*" (ai-session-title session))))
+         (agent-cmd (ai-session--build-agent-command session resume)))
 
     ;; Main window (left) - for file editing
     (switch-to-buffer main-buffer)
     (with-current-buffer main-buffer
-      (erase-buffer)
-      (insert (format "Session: %s\n" (ai-session-title session)))
-      (insert (format "Agent: %s\n" (ai-session-agent session)))
-      (insert (format "Workspace: %s\n\n" workspace))
-      (insert "Press 'f' to open a file\n")
-      (insert "Press 'n' to open neotree\n")
-      (insert "Press 't' to focus terminal\n")
+      (let ((inhibit-read-only t))
+        (erase-buffer)
+        (insert (format "Session: %s\n" (ai-session-title session)))
+        (insert (format "Agent: %s\n" (ai-session-agent session)))
+        (insert (format "Workspace: %s\n\n" workspace))
+        (insert "Press 'f' to open a file\n")
+        (insert "Press 'n' to open neotree\n")
+        (insert "Press 't' to focus terminal\n"))
       (ai-session-main-mode))
 
     ;; Right window - for AI chat (placeholder)
@@ -185,20 +305,25 @@ Layout:
                         (format "*AI Chat: %s*" (ai-session-title session)))))
       (switch-to-buffer chat-buffer)
       (with-current-buffer chat-buffer
-        (erase-buffer)
-        (insert (format "AI Chat (%s)\n" (ai-session-agent session)))
-        (insert "─────────────────────────\n\n")
-        (insert "(Chat interface placeholder)\n")))
+        (let ((inhibit-read-only t))
+          (erase-buffer)
+          (insert (format "AI Chat (%s)\n" (ai-session-agent session)))
+          (insert "─────────────────────────\n\n")
+          (insert "(Chat interface placeholder)\n"))))
 
-    ;; Bottom window - Terminal
+    ;; Bottom window - Terminal with AI agent
     (other-window -1)  ; back to main
-    (split-window-below (- (window-height) 10))
+    (split-window-below (- (window-height) 15))
     (other-window 1)
     (if (fboundp 'multi-term)
         (multi-term)
       (term "/bin/zsh"))
+
+    ;; cd to workspace and launch AI agent
     (when workspace
-      (term-send-raw-string (format "cd %s\n" (shell-quote-argument workspace))))
+      (term-send-raw-string (format "cd %s && %s\n"
+                                    (shell-quote-argument workspace)
+                                    agent-cmd)))
 
     ;; Return to main window
     (other-window -1)
@@ -247,22 +372,27 @@ Layout:
                                          default-directory nil t)))
     (ai-session-create :agent agent :title title :workspace workspace)))
 
-(cl-defun ai-session-create (&key agent title workspace)
-  "Create a new session with AGENT, TITLE, and WORKSPACE."
+(cl-defun ai-session-create (&key agent agent-config title workspace)
+  "Create a new session with AGENT, AGENT-CONFIG, TITLE, and WORKSPACE."
   (let* ((id (ai-session--generate-id))
          (session (make-ai-session
                    :id id
                    :title title
                    :agent agent
+                   :agent-config agent-config
                    :workspace (expand-file-name workspace)
                    :mcp-process nil
                    :tab-index nil
                    :created-at (current-time)
+                   :session-id nil
                    :buffers nil)))
 
     ;; Register session
     (ai-session--register session)
     (setq ai-session--current session)
+
+    ;; Setup tab-bar if not already
+    (ai-session--setup-tab-bar)
 
     ;; Create tab
     (ai-session--create-tab session)
@@ -271,10 +401,50 @@ Layout:
     (setf (ai-session-mcp-process session)
           (ai-session--start-mcp-server workspace))
 
-    ;; Setup layout
-    (ai-session--setup-layout session)
+    ;; Save to history
+    (ai-session--add-to-history session)
+
+    ;; Setup layout and launch agent
+    (ai-session--setup-layout session nil)
 
     (message "Session '%s' created with %s" title agent)
+    session))
+
+(cl-defun ai-session-resume (&key id agent agent-config title workspace session-id)
+  "Resume a session with ID, AGENT, AGENT-CONFIG, TITLE, WORKSPACE and SESSION-ID."
+  (let* ((session (make-ai-session
+                   :id id
+                   :title title
+                   :agent agent
+                   :agent-config agent-config
+                   :workspace (expand-file-name workspace)
+                   :mcp-process nil
+                   :tab-index nil
+                   :created-at (current-time)
+                   :session-id session-id
+                   :buffers nil)))
+
+    ;; Register session
+    (ai-session--register session)
+    (setq ai-session--current session)
+
+    ;; Setup tab-bar if not already
+    (ai-session--setup-tab-bar)
+
+    ;; Create tab
+    (ai-session--create-tab session)
+
+    ;; Start MCP server
+    (setf (ai-session-mcp-process session)
+          (ai-session--start-mcp-server workspace))
+
+    ;; Update last accessed
+    (ai-session--update-last-accessed session)
+
+    ;; Setup layout and launch agent with resume
+    (ai-session--setup-layout session t)
+
+    (message "Session '%s' resumed with %s" title agent)
     session))
 
 (defun ai-session-close (&optional session)

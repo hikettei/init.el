@@ -7,7 +7,8 @@
   },
   "command": {
     "executable": "claude",
-    "args": []
+    "args": [],
+    "resume_args": ["--resume"]
   },
   "mcp": {
     "enabled": true

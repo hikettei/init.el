@@ -166,12 +166,16 @@
              (color (cdr (assoc 'color agent-section)))
              (desc (cdr (assoc 'description agent-section)))
              (executable (cdr (assoc 'executable command-section)))
+             (args (cdr (assoc 'args command-section)))
+             (resume-args (cdr (assoc 'resume_args command-section)))
              (mcp-enabled (cdr (assoc 'enabled mcp-section))))
         (when (and name icon desc)
           (cons name (list :icon icon
                            :color (sw--color-to-face color)
                            :desc desc
                            :executable executable
+                           :args (append args nil)  ; convert vector to list
+                           :resume-args (append resume-args nil)
                            :mcp-enabled mcp-enabled
                            :config-file file)))))))
 
@@ -198,6 +202,162 @@
 
 (defvar sw--current-field 'agent
   "Currently focused field: 'agent, 'title, 'workspace, or 'buttons.")
+
+(defvar sw--past-sessions nil
+  "List of past sessions for the current workspace.")
+
+(defvar sw--selected-past-session 0
+  "Currently selected past session index.")
+
+(defvar sw--found-workspaces nil
+  "List of workspaces with session history found by search.")
+
+(defvar sw--all-sessions nil
+  "Flat list of all sessions from all found workspaces.
+Each entry is (workspace . session-data).")
+
+(defvar sw--selected-session-idx 0
+  "Currently selected session index in the flat list.")
+
+;;; ============================================================
+;;; Workspace Search
+;;; ============================================================
+
+(defcustom sw-workspace-search-depth 3
+  "Maximum depth to search for .hikettei directories."
+  :type 'integer
+  :group 'session-wizard)
+
+(defcustom sw-workspace-search-paths '("~/" "~/Projects" "~/Programming" "~/work" "~/dev")
+  "Default paths to search for workspaces with sessions."
+  :type '(repeat string)
+  :group 'session-wizard)
+
+(defun sw--find-hikettei-dirs (dir depth)
+  "Find all directories containing .hikettei/sessions.json under DIR up to DEPTH."
+  (let ((results '()))
+    (when (and (file-directory-p dir)
+               (> depth 0)
+               (not (string-prefix-p "." (file-name-nondirectory dir))))
+      ;; Check if this directory has .hikettei/sessions.json
+      (let ((sessions-file (expand-file-name ".hikettei/sessions.json" dir)))
+        (when (file-exists-p sessions-file)
+          (push dir results)))
+      ;; Recurse into subdirectories
+      (when (> depth 1)
+        (condition-case nil
+            (dolist (subdir (directory-files dir t "^[^.]" t))
+              (when (and (file-directory-p subdir)
+                         (not (member (file-name-nondirectory subdir)
+                                      '("node_modules" ".git" "venv" "__pycache__"
+                                        ".venv" "target" "build" "dist" ".cache"))))
+                (setq results (append results (sw--find-hikettei-dirs subdir (1- depth))))))
+          (error nil))))
+    results))
+
+(defun sw--build-all-sessions ()
+  "Build flat list of all sessions from found workspaces."
+  (setq sw--all-sessions nil)
+  (dolist (workspace sw--found-workspaces)
+    (when (fboundp 'ai-session--load-workspace-sessions)
+      (let ((sessions (ai-session--load-workspace-sessions workspace)))
+        (dolist (session sessions)
+          (push (cons workspace session) sw--all-sessions)))))
+  ;; Sort by last_accessed descending
+  (setq sw--all-sessions
+        (sort sw--all-sessions
+              (lambda (a b)
+                (string> (or (cdr (assoc 'last_accessed (cdr a))) "")
+                         (or (cdr (assoc 'last_accessed (cdr b))) "")))))
+  (setq sw--selected-session-idx 0))
+
+(defun sw--search-workspaces-from-pwd ()
+  "Search for workspaces with sessions starting from current directory."
+  (interactive)
+  (message "Searching...")
+  (let* ((start-dir (or default-directory "~/"))
+         (found (sw--find-hikettei-dirs start-dir sw-workspace-search-depth)))
+    (setq sw--found-workspaces found)
+    (sw--build-all-sessions)
+    (if sw--all-sessions
+        (message "Found %d session(s)" (length sw--all-sessions))
+      (message "No sessions found"))
+    (sw--refresh-info-buffer)))
+
+(defun sw--search-workspaces-global ()
+  "Search for workspaces with sessions in common project directories."
+  (interactive)
+  (message "Searching globally...")
+  (let ((all-found '()))
+    (dolist (path sw-workspace-search-paths)
+      (let ((expanded (expand-file-name path)))
+        (when (file-directory-p expanded)
+          (setq all-found (append all-found
+                                  (sw--find-hikettei-dirs expanded sw-workspace-search-depth))))))
+    (setq sw--found-workspaces (delete-dups all-found))
+    (sw--build-all-sessions)
+    (if sw--all-sessions
+        (message "Found %d session(s)" (length sw--all-sessions))
+      (message "No sessions found"))
+    (sw--refresh-info-buffer)))
+
+(defun sw--next-session ()
+  "Select the next session."
+  (interactive)
+  (when sw--all-sessions
+    (setq sw--selected-session-idx
+          (mod (1+ sw--selected-session-idx) (length sw--all-sessions)))
+    (sw--refresh-info-buffer)))
+
+(defun sw--prev-session ()
+  "Select the previous session."
+  (interactive)
+  (when sw--all-sessions
+    (setq sw--selected-session-idx
+          (mod (1- sw--selected-session-idx) (length sw--all-sessions)))
+    (sw--refresh-info-buffer)))
+
+(defun sw--restore-selected-session ()
+  "Restore the currently selected session."
+  (interactive)
+  (when (and sw--all-sessions
+             (>= sw--selected-session-idx 0)
+             (< sw--selected-session-idx (length sw--all-sessions)))
+    (let* ((entry (nth sw--selected-session-idx sw--all-sessions))
+           (workspace (car entry))
+           (session-data (cdr entry))
+           (id (cdr (assoc 'id session-data)))
+           (agent-name (cdr (assoc 'agent session-data)))
+           (title (cdr (assoc 'title session-data)))
+           (session-id (cdr (assoc 'session_id session-data)))
+           (agent-data (assoc agent-name sw--agents))
+           (agent-props (cdr agent-data))
+           (agent-config (when agent-props
+                           (list :executable (plist-get agent-props :executable)
+                                 :args (plist-get agent-props :args)
+                                 :resume-args (plist-get agent-props :resume-args)))))
+      (sw--stop-nyan-animation)
+      (kill-buffer sw--buffer-name)
+      (when (get-buffer "*Restore Session*")
+        (kill-buffer "*Restore Session*"))
+      (if (and (fboundp 'ai-session-resume) agent-config)
+          (ai-session-resume :id id
+                             :agent agent-name
+                             :agent-config agent-config
+                             :title title
+                             :workspace workspace
+                             :session-id session-id)
+        (message "Cannot resume: agent config not found for %s" agent-name)))))
+
+(defun sw--browse-workspace ()
+  "Browse and select workspace directory using completing-read."
+  (interactive)
+  (let ((workspace (read-directory-name "Select Workspace: "
+                                        default-directory nil t)))
+    (setq sw--workspace workspace)
+    (sw--load-past-sessions)
+    (sw--refresh-info-buffer)
+    (sw--render)))
 
 ;;; ============================================================
 ;;; ASCII Art
@@ -526,6 +686,8 @@
            (read-directory-name "Workspace Directory: "
                                 (or (and (not (string-empty-p sw--workspace)) sw--workspace)
                                     default-directory)))
+     (sw--load-past-sessions)
+     (sw--refresh-info-buffer)
      (sw--render))
     ('buttons
      (sw--create-session))
@@ -541,27 +703,108 @@
   (if (or (string-empty-p sw--session-title)
           (string-empty-p sw--workspace))
       (message "Please fill in all fields!")
-    (let ((agent (car (nth sw--current-agent sw--agents)))
-          (title sw--session-title)
-          (workspace sw--workspace))
+    (let* ((agent-data (nth sw--current-agent sw--agents))
+           (agent (car agent-data))
+           (agent-props (cdr agent-data))
+           (agent-config (list :executable (plist-get agent-props :executable)
+                               :args (plist-get agent-props :args)
+                               :resume-args (plist-get agent-props :resume-args)))
+           (title sw--session-title)
+           (workspace sw--workspace))
       (sw--stop-nyan-animation)
       (kill-buffer sw--buffer-name)
+      (when (get-buffer "*Restore Session*")
+        (kill-buffer "*Restore Session*"))
       ;; Call the session creation function from mcp-session.el
       (if (fboundp 'ai-session-create)
-          (ai-session-create :agent agent :title title :workspace workspace)
+          (ai-session-create :agent agent
+                             :agent-config agent-config
+                             :title title
+                             :workspace workspace)
         (message "Session: %s │ Agent: %s │ Workspace: %s" title agent workspace)))))
+
+(defun sw--resume-session ()
+  "Resume the selected past session."
+  (interactive)
+  (when (and sw--past-sessions
+             (>= sw--selected-past-session 0)
+             (< sw--selected-past-session (length sw--past-sessions)))
+    (let* ((session-data (nth sw--selected-past-session sw--past-sessions))
+           (id (cdr (assoc 'id session-data)))
+           (agent-name (cdr (assoc 'agent session-data)))
+           (title (cdr (assoc 'title session-data)))
+           (session-id (cdr (assoc 'session_id session-data)))
+           ;; Find agent config by name
+           (agent-data (assoc agent-name sw--agents))
+           (agent-props (cdr agent-data))
+           (agent-config (when agent-props
+                           (list :executable (plist-get agent-props :executable)
+                                 :args (plist-get agent-props :args)
+                                 :resume-args (plist-get agent-props :resume-args)))))
+      (sw--stop-nyan-animation)
+      (kill-buffer sw--buffer-name)
+      (when (get-buffer "*Restore Session*")
+        (kill-buffer "*Restore Session*"))
+      (if (and (fboundp 'ai-session-resume) agent-config)
+          (ai-session-resume :id id
+                             :agent agent-name
+                             :agent-config agent-config
+                             :title title
+                             :workspace sw--workspace
+                             :session-id session-id)
+        (message "Cannot resume: agent config not found for %s" agent-name)))))
 
 (defun sw--cancel ()
   "Cancel and close the wizard."
   (interactive)
   (sw--stop-nyan-animation)
   (kill-buffer sw--buffer-name)
+  (when (get-buffer "*Restore Session*")
+    (kill-buffer "*Restore Session*"))
   (message "Session creation cancelled."))
+
+(defun sw--next-past-session ()
+  "Select the next past session."
+  (interactive)
+  (when sw--past-sessions
+    (setq sw--selected-past-session
+          (mod (1+ sw--selected-past-session) (length sw--past-sessions)))
+    (sw--refresh-info-buffer)))
+
+(defun sw--prev-past-session ()
+  "Select the previous past session."
+  (interactive)
+  (when sw--past-sessions
+    (setq sw--selected-past-session
+          (mod (1- sw--selected-past-session) (length sw--past-sessions)))
+    (sw--refresh-info-buffer)))
 
 ;;; ============================================================
 ;;; Major Mode
 ;;; ============================================================
 
+;; Info buffer mode - simple navigation
+(defvar sw-info-mode-map
+  (let ((map (make-sparse-keymap)))
+    (define-key map (kbd "<up>") #'sw--prev-session)
+    (define-key map (kbd "<down>") #'sw--next-session)
+    (define-key map (kbd "k") #'sw--prev-session)
+    (define-key map (kbd "j") #'sw--next-session)
+    (define-key map (kbd "RET") #'sw--restore-selected-session)
+    (define-key map (kbd "<return>") #'sw--restore-selected-session)
+    (define-key map (kbd "s") #'sw--search-workspaces-from-pwd)
+    (define-key map (kbd "S") #'sw--search-workspaces-global)
+    (define-key map (kbd "q") #'sw--cancel)
+    map)
+  "Keymap for session info mode.")
+
+(define-derived-mode sw-info-mode special-mode "RestoreSession"
+  "Major mode for the restore session buffer."
+  (setq buffer-read-only t)
+  (setq truncate-lines t)
+  (display-line-numbers-mode -1))
+
+;; Main wizard mode (left pane - create new session)
 (defvar sw-mode-map
   (let ((map (make-sparse-keymap)))
     (define-key map (kbd "TAB") #'sw--next-field)
@@ -607,6 +850,11 @@
   (setq sw--workspace "")
   (setq sw--current-field 'agent)
   (setq sw--nyan-frame 1)
+  (setq sw--past-sessions nil)
+  (setq sw--selected-past-session 0)
+  (setq sw--found-workspaces nil)
+  (setq sw--all-sessions nil)
+  (setq sw--selected-session-idx 0)
 
   ;; Delete other windows and split
   (delete-other-windows)
@@ -625,58 +873,68 @@
   (switch-to-buffer (sw--create-info-buffer))
   (other-window -1))
 
+(defun sw--load-past-sessions ()
+  "Load past sessions for current workspace."
+  (when (and (not (string-empty-p sw--workspace))
+             (fboundp 'ai-session--load-workspace-sessions))
+    (setq sw--past-sessions
+          (ai-session--load-workspace-sessions sw--workspace))
+    (setq sw--selected-past-session 0)))
+
 (defun sw--create-info-buffer ()
   "Create an info buffer for the right pane."
-  (let ((buf (get-buffer-create "*Session Info*")))
+  (let ((buf (get-buffer-create "*Restore Session*")))
     (with-current-buffer buf
       (let ((inhibit-read-only t))
         (erase-buffer)
         (insert "\n")
-        (insert (propertize "   Quick Info\n" 'face 'sw-section-face))
+        (insert (propertize "   Restore Session\n" 'face 'sw-section-face))
         (insert (propertize (make-string 40 ?─) 'face 'sw-border-face))
         (insert "\n\n")
 
-        ;; Recent projects
-        (insert (propertize "   Recent Projects\n" 'face 'sw-section-cyan-face))
-        (insert "\n")
-        (let ((recent (if (boundp 'recentf-list)
-                          (seq-take (seq-filter #'file-directory-p recentf-list) 5)
-                        nil)))
-          (if recent
-              (dolist (dir recent)
-                (insert (propertize (format "   • %s\n" (abbreviate-file-name dir))
-                                    'face 'sw-hint-face)))
-            (insert (propertize "   (No recent projects)\n" 'face 'sw-hint-face))))
-        (insert "\n")
+        (if sw--all-sessions
+            ;; Show flat list of all sessions
+            (let ((idx 0))
+              (dolist (entry sw--all-sessions)
+                (let* ((workspace (car entry))
+                       (session (cdr entry))
+                       (selected (= idx sw--selected-session-idx))
+                       (title (cdr (assoc 'title session)))
+                       (agent (cdr (assoc 'agent session)))
+                       (indicator (if selected " ▶ " "   "))
+                       (title-face (if selected 'sw-value-face 'sw-hint-face))
+                       (path-display (abbreviate-file-name workspace)))
+                  (insert (propertize indicator 'face (if selected 'sw-selected-face 'default)))
+                  (insert (propertize (format "%s" title) 'face title-face))
+                  (insert (propertize (format " (%s)\n" agent) 'face 'sw-hint-face))
+                  (insert (propertize (format "      %s\n" path-display)
+                                      'face '(:foreground "#6272a4"))))
+                (setq idx (1+ idx))))
+          ;; No sessions - show search hint
+          (insert (propertize "   No sessions found.\n\n" 'face 'sw-hint-face))
+          (insert (propertize "   Press 's' to search from pwd\n" 'face 'sw-hint-face))
+          (insert (propertize "   Press 'S' for global search\n" 'face 'sw-hint-face)))
 
-        ;; Keybindings help
-        (insert (propertize "   Keybindings\n" 'face 'sw-section-green-face))
         (insert "\n")
-        (insert (propertize "   TAB       " 'face 'sw-value-face))
-        (insert (propertize "Next field\n" 'face 'sw-hint-face))
-        (insert (propertize "   S-TAB     " 'face 'sw-value-face))
-        (insert (propertize "Previous field\n" 'face 'sw-hint-face))
-        (insert (propertize "   ↑/↓       " 'face 'sw-value-face))
-        (insert (propertize "Select agent\n" 'face 'sw-hint-face))
-        (insert (propertize "   RET       " 'face 'sw-value-face))
-        (insert (propertize "Edit/Confirm\n" 'face 'sw-hint-face))
-        (insert (propertize "   q         " 'face 'sw-value-face))
-        (insert (propertize "Quit\n" 'face 'sw-hint-face))
+        (insert (propertize (make-string 40 ?─) 'face 'sw-border-face))
         (insert "\n")
+        (insert (propertize "   ↑/↓" 'face 'sw-value-face))
+        (insert (propertize " Navigate  " 'face 'sw-hint-face))
+        (insert (propertize "RET" 'face 'sw-value-face))
+        (insert (propertize " Restore\n" 'face 'sw-hint-face))
+        (insert (propertize "   s" 'face 'sw-value-face))
+        (insert (propertize " Search    " 'face 'sw-hint-face))
+        (insert (propertize "S" 'face 'sw-value-face))
+        (insert (propertize " Global search\n" 'face 'sw-hint-face)))
 
-        ;; Tips
-        (insert (propertize "   Tips\n" 'face 'sw-section-orange-face))
-        (insert "\n")
-        (insert (propertize "   • Select an AI agent for your session\n" 'face 'sw-hint-face))
-        (insert (propertize "   • Enter a descriptive title\n" 'face 'sw-hint-face))
-        (insert (propertize "   • Choose your project workspace\n" 'face 'sw-hint-face))
-        (insert (propertize "   • MCP server starts automatically\n" 'face 'sw-hint-face)))
-
-      (special-mode)
-      (setq buffer-read-only t)
-      (display-line-numbers-mode -1)
+      (sw-info-mode)
       (goto-char (point-min)))
     buf))
+
+(defun sw--refresh-info-buffer ()
+  "Refresh the info buffer with updated past sessions."
+  (when (get-buffer "*Restore Session*")
+    (sw--create-info-buffer)))
 
 ;; Set as startup screen
 (setq initial-buffer-choice #'session-wizard)
