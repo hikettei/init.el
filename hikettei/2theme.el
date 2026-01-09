@@ -53,8 +53,12 @@
 ;; Running nyan-cat in the editor
 (use-package nyan-mode
   :ensure t
+  :hook
+  (after-init . nyan-start-animation)
   :config
-  (nyan-mode 1))
+  (nyan-mode 1)
+  (setq nyan-animate-nyancat t)
+  (setq nyan-wavy-trail t))
 
 (use-package doom-modeline
   :ensure t

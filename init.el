@@ -18,7 +18,7 @@
 (include "mcp-session.el")      ;; AI Session Management
 (include "style.el")            ;; Style Configuration
 (include "keybindings.el")      ;; Keybindings for Emacs
-(include "dashboard.el")        ;; Dashboard setup
+(include "session-wizard.el")   ;; Startup Screen & Session Creation
 ;; ↑ Open Browser Graphically!
 ;; Using Discord from Emacs is possible?
 ;; Emacs Across Multiple Desktop Window?
