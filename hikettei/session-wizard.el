@@ -37,8 +37,23 @@
   :group 'session-wizard)
 
 (defface sw-section-face
-  '((t :foreground "#f8f8f2" :background "#3d4051" :weight bold :extend t))
-  "Face for section headers (3D button look)."
+  '((t :foreground "#bd93f9" :background "#44475a" :weight bold :extend t))
+  "Face for section headers (3D button look) - Purple on dark."
+  :group 'session-wizard)
+
+(defface sw-section-cyan-face
+  '((t :foreground "#8be9fd" :background "#44475a" :weight bold :extend t))
+  "Face for section headers - Cyan."
+  :group 'session-wizard)
+
+(defface sw-section-green-face
+  '((t :foreground "#50fa7b" :background "#44475a" :weight bold :extend t))
+  "Face for section headers - Green."
+  :group 'session-wizard)
+
+(defface sw-section-orange-face
+  '((t :foreground "#ffb86c" :background "#44475a" :weight bold :extend t))
+  "Face for section headers - Orange."
   :group 'session-wizard)
 
 (defface sw-card-face
@@ -57,8 +72,8 @@
   :group 'session-wizard)
 
 (defface sw-label-face
-  '((t :foreground "#f8f8f2" :weight bold))
-  "Face for labels."
+  '((t :foreground "#ff79c6" :weight bold))
+  "Face for labels - Pink."
   :group 'session-wizard)
 
 (defface sw-value-face
@@ -202,29 +217,40 @@
     (cancel-timer sw--nyan-timer)
     (setq sw--nyan-timer nil)))
 
+(defun sw--get-progress ()
+  "Get current progress (0-4) based on field and filled values."
+  (let ((base (pcase sw--current-field
+                ('agent 0)
+                ('title 1)
+                ('workspace 2)
+                ('buttons 3))))
+    (+ base
+       (if (not (string-empty-p sw--session-title)) 0.5 0)
+       (if (not (string-empty-p sw--workspace)) 0.5 0))))
+
 (defun sw--render-header ()
   "Render the header with 3D button style and Nyan Cat."
   (insert "\n")
-  ;; Try to insert nyan-mode images, fallback to ASCII
-  (if (and (display-graphic-p) (file-exists-p (expand-file-name "rainbow.xpm" sw--nyan-dir)))
-      (progn
-        ;; Rainbow trail
-        (dotimes (_ 8)
-          (sw--insert-nyan-image "rainbow"))
-        ;; Mark position for animated nyan cat (no space)
-        (setq sw--nyan-marker (point-marker))
-        ;; Insert first frame
-        (let ((file (expand-file-name "nyan-frame-1.xpm" sw--nyan-dir)))
-          (when (file-exists-p file)
-            (insert-image (create-image file 'xpm nil :ascent 'center)))))
-    ;; Fallback to ASCII rainbow
-    (insert (propertize "═══" 'face '(:foreground "#ff5555")))
-    (insert (propertize "═══" 'face '(:foreground "#ffb86c")))
-    (insert (propertize "═══" 'face '(:foreground "#f1fa8c")))
-    (insert (propertize "═══" 'face '(:foreground "#50fa7b")))
-    (insert (propertize "═══" 'face '(:foreground "#8be9fd")))
-    (insert (propertize "═══" 'face '(:foreground "#bd93f9")))
-    (insert (propertize " (=^･ω･^=)" 'face '(:foreground "#ff79c6"))))
+  ;; Calculate rainbow length based on progress (min 1, max ~90)
+  (let* ((progress (sw--get-progress))
+         (rainbow-count (+ 1 (floor (* progress 22)))))
+    ;; Try to insert nyan-mode images, fallback to ASCII
+    (if (and (display-graphic-p) (file-exists-p (expand-file-name "rainbow.xpm" sw--nyan-dir)))
+        (progn
+          ;; Rainbow trail - length based on progress
+          (dotimes (_ rainbow-count)
+            (sw--insert-nyan-image "rainbow"))
+          ;; Mark position for animated nyan cat (no space)
+          (setq sw--nyan-marker (point-marker))
+          ;; Insert first frame
+          (let ((file (expand-file-name "nyan-frame-1.xpm" sw--nyan-dir)))
+            (when (file-exists-p file)
+              (insert-image (create-image file 'xpm nil :ascent 'center)))))
+      ;; Fallback to ASCII rainbow - also dynamic
+      (let ((colors '("#ff5555" "#ffb86c" "#f1fa8c" "#50fa7b" "#8be9fd" "#bd93f9")))
+        (dotimes (i (min rainbow-count (length colors)))
+          (insert (propertize "═══" 'face `(:foreground ,(nth (mod i 6) colors))))))
+      (insert (propertize "(=^･ω･^=)" 'face '(:foreground "#ff79c6")))))
   (insert "\n")
   (insert (propertize "   " 'face 'default))
   (insert (propertize (format "%-77s" sw--header-title) 'face 'sw-section-face))
@@ -275,7 +301,7 @@
 
 (defun sw--render-agents ()
   "Render the agent selection section."
-  (insert (propertize (format "   %-77s" "Select AI Agent") 'face 'sw-section-face))
+  (insert (propertize (format "   %-77s" "Select AI Agent") 'face 'sw-section-cyan-face))
   (insert "\n")
   (if (eq sw--current-field 'agent)
       (insert (propertize "   ↑/↓ to select, TAB to continue" 'face 'sw-hint-face))
@@ -313,7 +339,7 @@
 
 (defun sw--render-inputs ()
   "Render the input fields section."
-  (insert (propertize (format "   %-77s" "Session Details") 'face 'sw-section-face))
+  (insert (propertize (format "   %-77s" "Session Details") 'face 'sw-section-green-face))
   (insert "\n\n")
 
   (sw--render-input-field "Title:" sw--session-title 'title "Enter session title...")
@@ -327,7 +353,7 @@
   "Render the session preview."
   (when (and (not (string-empty-p sw--session-title))
              (not (string-empty-p sw--workspace)))
-    (insert (propertize (format "   %-77s" "Preview") 'face 'sw-section-face))
+    (insert (propertize (format "   %-77s" "Preview") 'face 'sw-section-orange-face))
     (insert "\n\n")
     (let* ((agent-name (car (nth sw--current-agent sw--agents)))
            (agent-props (cdr (nth sw--current-agent sw--agents)))
