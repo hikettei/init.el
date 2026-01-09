@@ -34,13 +34,18 @@
   :type 'string
   :group 'ai-session)
 
-(defcustom ai-session-mcp-server-args '("run" "mcp-file-editor")
+(defcustom ai-session-mcp-server-args '("run" "emacs-mcp-server")
   "Arguments for MCP server command."
   :type '(repeat string)
   :group 'ai-session)
 
 (defcustom ai-session-mcp-server-directory "~/.emacs.d"
   "Directory where MCP server pyproject.toml is located."
+  :type 'string
+  :group 'ai-session)
+
+(defcustom ai-session-mcp-config-dir "~/.emacs.d/.hikettei/mcp-configs"
+  "Directory to store generated MCP config files."
   :type 'string
   :group 'ai-session)
 
@@ -61,6 +66,7 @@
   agent-config          ; Agent config plist from JSON
   workspace             ; Workspace directory path
   mcp-process           ; MCP server process
+  mcp-config-file       ; Path to MCP config file for this session
   tab-index             ; Tab-bar index
   created-at            ; Creation timestamp
   session-id            ; Agent's session ID for resume
@@ -192,6 +198,38 @@
 ;;; MCP Server Management
 ;;; ============================================================
 
+(defun ai-session--ensure-mcp-config-dir ()
+  "Ensure MCP config directory exists."
+  (let ((dir (expand-file-name ai-session-mcp-config-dir)))
+    (unless (file-directory-p dir)
+      (make-directory dir t))
+    dir))
+
+(defun ai-session--generate-mcp-config (session)
+  "Generate MCP config file for SESSION and return its path."
+  (ai-session--ensure-mcp-config-dir)
+  (let* ((workspace (ai-session-workspace session))
+         (config-file (expand-file-name
+                       (format "mcp-%s.json" (ai-session-id session))
+                       ai-session-mcp-config-dir))
+         (mcp-config `((mcpServers
+                        . ((emacs-editor
+                            . ((command . ,ai-session-mcp-server-command)
+                               (args . ,(vconcat ai-session-mcp-server-args))
+                               (cwd . ,(expand-file-name ai-session-mcp-server-directory))))))))
+         (json-encoding-pretty-print t))
+    (with-temp-file config-file
+      (insert (json-encode mcp-config)))
+    config-file))
+
+(defun ai-session--cleanup-mcp-config (session)
+  "Remove MCP config file for SESSION."
+  (let ((config-file (expand-file-name
+                      (format "mcp-%s.json" (ai-session-id session))
+                      ai-session-mcp-config-dir)))
+    (when (file-exists-p config-file)
+      (delete-file config-file))))
+
 (defun ai-session--start-mcp-server (workspace)
   "Start MCP server for WORKSPACE and return the process."
   (let* ((default-directory (expand-file-name ai-session-mcp-server-directory))
@@ -256,15 +294,24 @@ If RESUME is non-nil, use resume_args with session_id."
          (args (if resume
                    (plist-get config :resume-args)
                  (plist-get config :args)))
-         (session-id (ai-session-session-id session)))
-    (if resume
-        (format "%s %s %s"
-                executable
-                (mapconcat #'identity args " ")
-                (or session-id ""))
-      (format "%s %s"
-              executable
-              (mapconcat #'identity args " ")))))
+         (session-id (ai-session-session-id session))
+         (mcp-config-file (ai-session-mcp-config-file session))
+         ;; Build MCP args based on agent type
+         (mcp-args (when mcp-config-file
+                     (pcase executable
+                       ("claude" (format "--mcp-config %s" mcp-config-file))
+                       (_ "")))))  ; gemini/codex use different config method
+    (string-trim
+     (if resume
+         (format "%s %s %s %s"
+                 executable
+                 (or mcp-args "")
+                 (mapconcat #'identity args " ")
+                 (or session-id ""))
+       (format "%s %s %s"
+               executable
+               (or mcp-args "")
+               (mapconcat #'identity args " "))))))
 
 (defun ai-session--setup-layout (session &optional resume)
   "Setup multi-pane layout for SESSION.
@@ -315,15 +362,22 @@ Layout:
     (other-window -1)  ; back to main
     (split-window-below (- (window-height) 15))
     (other-window 1)
-    (if (fboundp 'multi-term)
-        (multi-term)
-      (term "/bin/zsh"))
-
-    ;; cd to workspace and launch AI agent
-    (when workspace
+    (cond
+     ((fboundp 'vterm)
+      (vterm)
+      (vterm-send-string (format "cd %s && %s\n"
+                                 (shell-quote-argument workspace)
+                                 agent-cmd)))
+     ((fboundp 'multi-term)
+      (multi-term)
       (term-send-raw-string (format "cd %s && %s\n"
                                     (shell-quote-argument workspace)
                                     agent-cmd)))
+     (t
+      (term "/bin/zsh")
+      (term-send-raw-string (format "cd %s && %s\n"
+                                    (shell-quote-argument workspace)
+                                    agent-cmd))))
 
     ;; Return to main window
     (other-window -1)
@@ -382,6 +436,7 @@ Layout:
                    :agent-config agent-config
                    :workspace (expand-file-name workspace)
                    :mcp-process nil
+                   :mcp-config-file nil
                    :tab-index nil
                    :created-at (current-time)
                    :session-id nil
@@ -396,6 +451,10 @@ Layout:
 
     ;; Create tab
     (ai-session--create-tab session)
+
+    ;; Generate MCP config file for this session
+    (setf (ai-session-mcp-config-file session)
+          (ai-session--generate-mcp-config session))
 
     ;; Start MCP server
     (setf (ai-session-mcp-process session)
@@ -419,6 +478,7 @@ Layout:
                    :agent-config agent-config
                    :workspace (expand-file-name workspace)
                    :mcp-process nil
+                   :mcp-config-file nil
                    :tab-index nil
                    :created-at (current-time)
                    :session-id session-id
@@ -433,6 +493,10 @@ Layout:
 
     ;; Create tab
     (ai-session--create-tab session)
+
+    ;; Generate MCP config file for this session
+    (setf (ai-session-mcp-config-file session)
+          (ai-session--generate-mcp-config session))
 
     ;; Start MCP server
     (setf (ai-session-mcp-process session)
@@ -455,6 +519,9 @@ Layout:
       (when (y-or-n-p (format "Close session '%s'? " (ai-session-title sess)))
         ;; Stop MCP server
         (ai-session--stop-mcp-server sess)
+
+        ;; Cleanup MCP config file
+        (ai-session--cleanup-mcp-config sess)
 
         ;; Kill session buffers
         (dolist (buf (ai-session-buffers sess))
