@@ -13,4 +13,3 @@
    '(markdown-link-face ((t (:foreground "#c0c0c0"))))
    '(markdown-list-face ((t (:foreground "#ff7f50")))))
   (define-key markdown-mode-map (kbd "<S-tab>") #'markdown-shifttab))
-
