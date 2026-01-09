@@ -556,13 +556,75 @@
   (setq sw--current-field 'agent)
   (setq sw--nyan-frame 1)
 
+  ;; Delete other windows and split
+  (delete-other-windows)
+
   ;; Create and setup buffer
   (let ((buf (get-buffer-create sw--buffer-name)))
     (switch-to-buffer buf)
     (sw-mode)
     (sw--render)
     ;; Start nyan animation
-    (sw--start-nyan-animation)))
+    (sw--start-nyan-animation))
+
+  ;; Split window and show info on right
+  (split-window-right)
+  (other-window 1)
+  (switch-to-buffer (sw--create-info-buffer))
+  (other-window -1))
+
+(defun sw--create-info-buffer ()
+  "Create an info buffer for the right pane."
+  (let ((buf (get-buffer-create "*Session Info*")))
+    (with-current-buffer buf
+      (let ((inhibit-read-only t))
+        (erase-buffer)
+        (insert "\n")
+        (insert (propertize "   Quick Info\n" 'face 'sw-section-face))
+        (insert (propertize (make-string 40 ?─) 'face 'sw-border-face))
+        (insert "\n\n")
+
+        ;; Recent projects
+        (insert (propertize "   Recent Projects\n" 'face 'sw-section-cyan-face))
+        (insert "\n")
+        (let ((recent (if (boundp 'recentf-list)
+                          (seq-take (seq-filter #'file-directory-p recentf-list) 5)
+                        nil)))
+          (if recent
+              (dolist (dir recent)
+                (insert (propertize (format "   • %s\n" (abbreviate-file-name dir))
+                                    'face 'sw-hint-face)))
+            (insert (propertize "   (No recent projects)\n" 'face 'sw-hint-face))))
+        (insert "\n")
+
+        ;; Keybindings help
+        (insert (propertize "   Keybindings\n" 'face 'sw-section-green-face))
+        (insert "\n")
+        (insert (propertize "   TAB       " 'face 'sw-value-face))
+        (insert (propertize "Next field\n" 'face 'sw-hint-face))
+        (insert (propertize "   S-TAB     " 'face 'sw-value-face))
+        (insert (propertize "Previous field\n" 'face 'sw-hint-face))
+        (insert (propertize "   ↑/↓       " 'face 'sw-value-face))
+        (insert (propertize "Select agent\n" 'face 'sw-hint-face))
+        (insert (propertize "   RET       " 'face 'sw-value-face))
+        (insert (propertize "Edit/Confirm\n" 'face 'sw-hint-face))
+        (insert (propertize "   q         " 'face 'sw-value-face))
+        (insert (propertize "Quit\n" 'face 'sw-hint-face))
+        (insert "\n")
+
+        ;; Tips
+        (insert (propertize "   Tips\n" 'face 'sw-section-orange-face))
+        (insert "\n")
+        (insert (propertize "   • Select an AI agent for your session\n" 'face 'sw-hint-face))
+        (insert (propertize "   • Enter a descriptive title\n" 'face 'sw-hint-face))
+        (insert (propertize "   • Choose your project workspace\n" 'face 'sw-hint-face))
+        (insert (propertize "   • MCP server starts automatically\n" 'face 'sw-hint-face)))
+
+      (special-mode)
+      (setq buffer-read-only t)
+      (display-line-numbers-mode -1)
+      (goto-char (point-min)))
+    buf))
 
 ;; Set as startup screen
 (setq initial-buffer-choice #'session-wizard)
