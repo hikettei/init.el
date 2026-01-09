@@ -25,7 +25,6 @@
 (use-package doom-themes
   :pin melpa
   :ensure t
-  :after neotree
   :custom
   (doom-themes-enable-italic t)
   (doom-themes-enable-bold t)
@@ -148,6 +147,7 @@
   :config
   (amx-mode 1))
 
+(when nil
 (use-package centaur-tabs
   :ensure t
   :demand
@@ -168,7 +168,7 @@
   (setq x-underline-at-descent-line t)
   (setq centaur-tabs-close-button "X")
   (setq centaur-tabs-set-modified-marker t)
-  (setq centaur-tabs-modified-marker "*"))
+  (setq centaur-tabs-modified-marker "*")))
 
 (use-package vundo
   :ensure t

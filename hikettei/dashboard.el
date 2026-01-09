@@ -28,14 +28,4 @@
   (setq dashboard-footer-icon (all-the-icons-octicon "dashboard"
                                                      :height 1.1
                                                      :v-adjust -0.05
-                                                     :face 'font-lock-keyword-face))
-
-  (add-hook 'emacs-startup-hook #'neotree-show)
-  (add-hook 'emacs-startup-hook
-            (lambda ()
-              (setq neo-window-width 40)
-              (let ((height (/ (window-body-height) 5)))
-                (split-window-vertically (* 4 height)))
-              (other-window 1)
-              (multi-term)
-              (other-window -1))))
+                                                     :face 'font-lock-keyword-face)))

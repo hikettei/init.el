@@ -22,3 +22,7 @@ $ git clone git@github.com:hikettei/init.el.git
 $ cd ./init.el
 $ make install
 ```
+
+## Requirements
+
+- [ ] uv (for MCP)
