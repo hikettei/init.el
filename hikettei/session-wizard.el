@@ -674,6 +674,13 @@ Each entry is (workspace . session-data).")
   (kill-buffer sw--buffer-name)
   (when (get-buffer "*Restore Session*")
     (kill-buffer "*Restore Session*"))
+
+  ;; Rename tab if we came from [+] button
+  (when (and (boundp 'ai-session--creating-from-wizard)
+             ai-session--creating-from-wizard)
+    (setq ai-session--creating-from-wizard nil)
+    (tab-bar-rename-tab "📝 Editor"))
+
   (delete-other-windows)
 
   ;; Setup layout: neotree + main editor + terminal at bottom
@@ -829,6 +836,11 @@ Each entry is (workspace . session-data).")
   (kill-buffer sw--buffer-name)
   (when (get-buffer "*Restore Session*")
     (kill-buffer "*Restore Session*"))
+  ;; If we came from [+] button, close the "New Session" tab
+  (when (and (boundp 'ai-session--creating-from-wizard)
+             ai-session--creating-from-wizard)
+    (setq ai-session--creating-from-wizard nil)
+    (tab-bar-close-tab))
   (message "Session creation cancelled."))
 
 (defun sw--next-past-session ()
