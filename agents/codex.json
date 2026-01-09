@@ -1,0 +1,15 @@
+{
+  "agent": {
+    "name": "Codex",
+    "icon": "🧠",
+    "color": "#0abf53",
+    "description": "OpenAI - Specialized in code generation"
+  },
+  "command": {
+    "executable": "codex",
+    "args": []
+  },
+  "mcp": {
+    "enabled": true
+  }
+}

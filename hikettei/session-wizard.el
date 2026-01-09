@@ -12,6 +12,7 @@
 ;;; Code:
 
 (require 'cl-lib)
+(require 'json)
 
 ;;; ============================================================
 ;;; Faces
@@ -128,14 +129,63 @@
 (defvar sw--buffer-name "*Session Wizard*"
   "Name of the session wizard buffer.")
 
-(defvar sw--agents
-  '(("Claude" . (:icon "🤖" :color sw-agent-claude-face
-                 :desc "Anthropic - Complex reasoning & code review"))
-    ("Gemini" . (:icon "💎" :color sw-agent-gemini-face
-                 :desc "Google - Multi-modal tasks & analysis"))
-    ("Codex"  . (:icon "🧠" :color sw-agent-codex-face
-                 :desc "OpenAI - Specialized in code generation")))
-  "Available AI agents with metadata.")
+(defcustom sw-agents-directory "~/.emacs.d/agents/"
+  "Directory containing agent configuration files."
+  :type 'string
+  :group 'session-wizard)
+
+(defvar sw--agents nil
+  "Available AI agents loaded from config files.")
+
+;;; ============================================================
+;;; JSON Config Parser
+;;; ============================================================
+
+(defun sw--parse-config-file (file)
+  "Parse a JSON config FILE and return an alist."
+  (when (file-exists-p file)
+    (json-read-file file)))
+
+(defun sw--color-to-face (color-hex)
+  "Convert COLOR-HEX string to a face symbol or create inline face."
+  (cond
+   ((string= color-hex "#ff9f43") 'sw-agent-claude-face)
+   ((string= color-hex "#48dbfb") 'sw-agent-gemini-face)
+   ((string= color-hex "#0abf53") 'sw-agent-codex-face)
+   (t `(:foreground ,color-hex :weight bold))))
+
+(defun sw--load-agent-from-json (file)
+  "Load agent configuration from JSON FILE."
+  (let ((config (sw--parse-config-file file)))
+    (when config
+      (let* ((agent-section (cdr (assoc 'agent config)))
+             (command-section (cdr (assoc 'command config)))
+             (mcp-section (cdr (assoc 'mcp config)))
+             (name (cdr (assoc 'name agent-section)))
+             (icon (cdr (assoc 'icon agent-section)))
+             (color (cdr (assoc 'color agent-section)))
+             (desc (cdr (assoc 'description agent-section)))
+             (executable (cdr (assoc 'executable command-section)))
+             (mcp-enabled (cdr (assoc 'enabled mcp-section))))
+        (when (and name icon desc)
+          (cons name (list :icon icon
+                           :color (sw--color-to-face color)
+                           :desc desc
+                           :executable executable
+                           :mcp-enabled mcp-enabled
+                           :config-file file)))))))
+
+(defun sw--load-agents ()
+  "Load all agent configurations from `sw-agents-directory'."
+  (let ((dir (expand-file-name sw-agents-directory)))
+    (unless (file-directory-p dir)
+      (error "Agent configuration directory not found: %s. Run 'make install' first" dir))
+    (let ((files (directory-files dir t "\\.json$")))
+      (unless files
+        (error "No agent configuration files (.json) found in %s" dir))
+      (setq sw--agents
+            (delq nil (mapcar #'sw--load-agent-from-json files)))))
+  sw--agents)
 
 (defvar sw--current-agent 0
   "Currently selected agent index.")
@@ -549,6 +599,8 @@
   (interactive)
   ;; Stop any existing animation
   (sw--stop-nyan-animation)
+  ;; Load agents from config files
+  (sw--load-agents)
   ;; Reset state
   (setq sw--current-agent 0)
   (setq sw--session-title "")

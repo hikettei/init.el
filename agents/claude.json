@@ -1,0 +1,15 @@
+{
+  "agent": {
+    "name": "Claude",
+    "icon": "🤖",
+    "color": "#ff9f43",
+    "description": "Anthropic - Complex reasoning & code review"
+  },
+  "command": {
+    "executable": "claude",
+    "args": []
+  },
+  "mcp": {
+    "enabled": true
+  }
+}
