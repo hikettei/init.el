@@ -14,6 +14,7 @@
 (include "6markdown.el")        ;; Markdown Editing Environment
 ;(include "7eaf.el")             ;; Emacs Application Framework Setup
 ;(include "8claude-code.el")     ;; Claude Code Configurations
+(include "mcp/file-editor.el")  ;; MCP File Editor Review UI
 (include "style.el")            ;; Style Configuration
 (include "keybindings.el")      ;; Keybindings for Emacs
 (include "dashboard.el")        ;; Dashboard setup
