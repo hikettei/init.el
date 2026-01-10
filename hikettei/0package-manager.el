@@ -10,6 +10,10 @@
 	("melpa-stable" . "https://stable.melpa.org/packages/")))
 (package-initialize)
 
+;; web-server - HTTP server for MCP integration
+(use-package web-server
+  :ensure t)
+
 ;; vterm - Fast terminal emulator (iTerm2 Pro theme)
 (use-package vterm
   :ensure t

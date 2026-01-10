@@ -72,8 +72,8 @@
   :type 'sexp
   :group 'ai-session)
 
-(defcustom ai-session-use-elisp-mcp-server t
-  "Use Elisp MCP server instead of Python."
+(defcustom ai-session-enable-mcp-server t
+  "Enable the Elisp-based MCP HTTP server for AI agent integration."
   :type 'boolean
   :group 'ai-session)
 
@@ -249,7 +249,7 @@ The config file is stored at workspace/.hikettei/mcp-config-<agent>.json"
          (config-file (ai-session--get-mcp-config-path session))
          (agent-name (ai-session-agent session))
          ;; Generate MCP config with the server URL
-         (mcp-config (if (and ai-session-use-elisp-mcp-server port)
+         (mcp-config (if (and ai-session-enable-mcp-server port)
                          ;; HTTP-based Elisp server - same format works for Claude, Gemini, Codex
                          `((mcpServers
                             . ((emacs-editor
@@ -280,7 +280,7 @@ Returns the server object (cons of server . port), or nil if MCP is disabled."
         (progn
           (message "MCP disabled for agent %s" (ai-session-agent session))
           nil)
-      (if (and ai-session-use-elisp-mcp-server
+      (if (and ai-session-enable-mcp-server
                (fboundp 'mcp-server-start))
           ;; Use Elisp MCP server
           (let ((result (mcp-server-start workspace)))
@@ -294,7 +294,7 @@ Returns the server object (cons of server . port), or nil if MCP is disabled."
 (defun ai-session--stop-mcp-server (session)
   "Stop MCP server for SESSION."
   (when-let ((server (ai-session-mcp-server session)))
-    (if (and ai-session-use-elisp-mcp-server
+    (if (and ai-session-enable-mcp-server
              (fboundp 'mcp-server-stop))
         ;; Elisp server
         (progn

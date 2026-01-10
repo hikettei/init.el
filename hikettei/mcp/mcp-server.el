@@ -29,10 +29,8 @@
 (require 'json)
 (require 'url-parse)
 
-;; Use use-package for web-server dependency
-(use-package web-server
-  :ensure t
-  :defer t)
+;; web-server is installed via 0package-manager.el
+(require 'web-server)
 
 ;; File editor for review UI
 (require 'file-editor)
