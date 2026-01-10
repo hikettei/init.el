@@ -5,6 +5,10 @@
         (load-file pathname)
         (message "File %s does not exist." pathname))))
 
+;; Add hikettei subdirectories to load-path for require
+(add-to-list 'load-path (expand-file-name "~/.emacs.d/hikettei/mcp/"))
+(add-to-list 'load-path (expand-file-name "~/.emacs.d/hikettei/panel/"))
+
 (include "0package-manager.el") ;; Setup Elpaca and use-package
 (include "1multi-term.el")      ;; Multi-term setup
 (include "2theme.el")           ;; Doom-Theme, Fonts, Configuration

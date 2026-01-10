@@ -25,7 +25,10 @@
 (require 'json)
 (require 'url-parse)
 (require 'web-server)
-(require 'memory)
+
+;; Load memory module from same directory
+(let ((dir (file-name-directory (or load-file-name buffer-file-name))))
+  (load (expand-file-name "memory" dir) nil t))
 
 (declare-function file-editor-open "file-editor")
 (declare-function ws-start "web-server")
