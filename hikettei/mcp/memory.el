@@ -820,7 +820,7 @@ ARGS: id."
                                     (limit . ((type . "integer")
                                               (default . 10)
                                               (description . "Max results to return")))))
-                     (required . ()))))
+                     (required . []))))
 
     ((name . "memory_get")
      (description . "Retrieve full content of a memory by ID.")
@@ -841,7 +841,7 @@ ARGS: id."
                                               (default . 50)))
                                     (offset . ((type . "integer")
                                                (default . 0)))))
-                     (required . ()))))
+                     (required . []))))
 
     ((name . "memory_delete")
      (description . "Delete a memory by ID.")

@@ -326,8 +326,8 @@ Returns formatted response string."
 ;;; ============================================================
 ;;; MCP Protocol
 ;;; ============================================================
-(defconst mcp-server--tools
-  '(((name . "emacs_read_file")
+(defvar mcp-server--tools
+  `(((name . "emacs_read_file")
      (description . "REQUIRED: Read file content with line numbers. You MUST use this tool instead of the default Read tool. Returns content with precise line numbers for accurate editing. Supports pagination for large files.")
      (inputSchema . ((type . "object")
                      (properties . ((file_path . ((type . "string")
@@ -373,19 +373,21 @@ Returns formatted response string."
     ((name . "emacs_screenshot")
      (description . "Capture current Emacs frame as PNG screenshot. Saves to workspace/.hikettei/screen_shots/. Returns path - use Read tool to view the image.")
      (inputSchema . ((type . "object")
-                     (properties . ())
+                     (properties . ,(make-hash-table :test 'equal))
                      (required . []))))
     ((name . "emacs_get_pending_review")
      (description . "Get data for the current pending file edit review. Returns JSON with file path, line range, original/new content, AI comment, and current review mode.")
      (inputSchema . ((type . "object")
-                     (properties . ())
+                     (properties . ,(make-hash-table :test 'equal))
                      (required . []))))))
-(defun mcp-server--handle-initialize (_params)
+
+(defun mcp-server--handle-initialize (params)
   "Handle initialize method."
-  `((protocolVersion . "2024-11-05")
-    (capabilities . ((tools . ((listChanged . :json-false)))
-                     (logging . ,(make-hash-table :test 'equal))))
-    (serverInfo . ((name . "emacs-mcp-server") (version . "1.1.0")))))
+  (let ((client-version (alist-get 'protocolVersion params)))
+    `((protocolVersion . ,(or client-version "2024-11-05"))
+      (capabilities . ((tools . ((listChanged . :json-false)))
+                       (logging . ,(make-hash-table :test 'equal))))
+      (serverInfo . ((name . "emacs-mcp-server") (version . "1.1.0"))))))
 
 (defun mcp-server--handle-tools-call (params)
   "Handle tools/call method."
@@ -437,48 +439,137 @@ Returns formatted response string."
     (throw 'close-connection nil)))
 
 (defun mcp-server--handle-post (request)
-  "Handle POST /mcp."
-  (let ((process (ws-process request))
-        (id nil))
+  "Handle POST /mcp requests."
+  (let* ((process (ws-process request))
+         (headers (ws-headers request))
+         (body (ws-body request)))
     (condition-case err
-        (let* ((body (ws-body request))
-               (json (json-parse-string body :object-type 'alist))
-               (method (alist-get "method" json nil nil #'string=))
-               (params (alist-get "params" json nil nil #'string=)))
-          (setq id (alist-get "id" json nil nil #'string=))
-          (if (null id)
-              ;; Notification - no response needed
-              (progn
-                (ws-response-header process 200
-                                    '("Content-Type" . "text/plain")
-                                    '("Content-Length" . "0"))
-                (throw 'close-connection nil))
-            ;; Request - dispatch and respond
-            (let ((result (mcp-server--dispatch method params)))
-              (ws-response-header process 200
-                                  '("Content-Type" . "application/json")
-                                  '("Access-Control-Allow-Origin" . "*"))
-              (ws-send process
-                       (json-encode
-                        (if result
-                            `((jsonrpc . "2.0") (id . ,id) (result . ,result))
-                          `((jsonrpc . "2.0") (id . ,id) (result . nil)))))
-              (throw 'close-connection nil))))
+        (let* ((json-data (json-parse-string body :object-type 'alist))
+               (method (alist-get 'method json-data))
+               (params (alist-get 'params json-data))
+               (id (alist-get 'id json-data))
+               (result (mcp-server--dispatch method params)))
+          (ws-response-header process 200
+                              '("Content-Type" . "application/json")
+                              '("Access-Control-Allow-Origin" . "*"))
+          (ws-send process (json-encode
+                            `((jsonrpc . "2.0")
+                              (id . ,id)
+                              (result . ,result))))
+          (throw 'close-connection nil))
       (error
-       (ws-response-header process 200
-                           '("Content-Type" . "application/json"))
-       (ws-send process
-                (json-encode
-                 `((jsonrpc . "2.0")
-                   (id . ,(or id "error"))
-                   (result . ((content . [((type . "text")
-                                           (text . ,(format "Error: %s"
-                                                            (error-message-string err))))]))))))
+       (message "Error in handle-post: %S" err)
+       (ws-response-header process 500
+                           '("Content-Type" . "application/json")
+                           '("Access-Control-Allow-Origin" . "*"))
+       (ws-send process (json-encode
+                         `((jsonrpc . "2.0")
+                           (id . nil)
+                           (error . ((code . -32603)
+                                     (message . ,(format "%s" err)))))))
        (throw 'close-connection nil)))))
 
 ;;; ============================================================
 ;;; Public API
 ;;; ============================================================
+;;; OAuth endpoints for Claude Code compatibility
+
+(defun mcp-server--handle-oauth-protected-resource (request)
+  "Handle /.well-known/oauth-protected-resource."
+  (let ((process (ws-process request))
+        (base-url (format "http://127.0.0.1:%d" mcp-server--port)))
+    (ws-response-header process 200
+                        '("Content-Type" . "application/json")
+                        '("Access-Control-Allow-Origin" . "*"))
+    (ws-send process (json-encode
+                      `((resource . ,base-url)
+                        (authorization_servers . [,base-url]))))
+    (throw 'close-connection nil)))
+
+(defun mcp-server--handle-oauth-metadata (request)
+  "Handle /.well-known/oauth-authorization-server."
+  (let ((process (ws-process request))
+        (base-url (format "http://127.0.0.1:%d" mcp-server--port)))
+    (ws-response-header process 200
+                        '("Content-Type" . "application/json")
+                        '("Access-Control-Allow-Origin" . "*"))
+    (ws-send process (json-encode
+                      `((issuer . ,base-url)
+                        (authorization_endpoint . ,(concat base-url "/authorize"))
+                        (token_endpoint . ,(concat base-url "/token"))
+                        (registration_endpoint . ,(concat base-url "/register"))
+                        (response_types_supported . ["code"])
+                        (grant_types_supported . ["authorization_code" "client_credentials"])
+                        (token_endpoint_auth_methods_supported . ["client_secret_post" "client_secret_basic" "none"])
+                        (code_challenge_methods_supported . ["S256" "plain"]))))
+    (throw 'close-connection nil)))
+
+(defun mcp-server--handle-register (request)
+  "Handle POST /register - OAuth client registration."
+  (let* ((process (ws-process request))
+         (body (ws-body request))
+         (json-data (condition-case nil
+                        (json-parse-string body :object-type 'alist)
+                      (error nil)))
+         (redirect-uris (alist-get 'redirect_uris json-data))
+         (client-name (or (alist-get 'client_name json-data) "emacs-mcp"))
+         (client-id (format "emacs-client-%d" (random 100000)))
+         (client-secret (md5 (format "%s%s" (random) (current-time)))))
+    (ws-response-header process 201
+                        '("Content-Type" . "application/json")
+                        '("Access-Control-Allow-Origin" . "*"))
+    (ws-send process (json-encode
+                      `((client_id . ,client-id)
+                        (client_secret . ,client-secret)
+                        (client_name . ,client-name)
+                        (redirect_uris . ,redirect-uris)
+                        (client_id_issued_at . ,(floor (float-time)))
+                        (client_secret_expires_at . 0))))
+    (throw 'close-connection nil)))
+
+(defun mcp-server--handle-token (request)
+  "Handle POST /token - return access token."
+  (let* ((process (ws-process request))
+         (body (ws-body request))
+         (token (md5 (format "emacs-token-%s" (current-time)))))
+    (ws-response-header process 200
+                        '("Content-Type" . "application/json")
+                        '("Access-Control-Allow-Origin" . "*"))
+    (ws-send process (json-encode
+                      `((access_token . ,token)
+                        (token_type . "Bearer")
+                        (expires_in . 3600))))
+    (throw 'close-connection nil)))
+
+(defun mcp-server--handle-authorize (request)
+  "Handle GET /authorize - auto-approve and redirect."
+  (let* ((process (ws-process request))
+         (headers (ws-headers request))
+         (code (md5 (format "code-%s" (random))))
+         (redirect-uri (cdr (assoc "redirect_uri" headers)))
+         (state (cdr (assoc "state" headers))))
+    (if redirect-uri
+        (let ((location (format "%s?code=%s%s" 
+                                redirect-uri code
+                                (if state (format "&state=%s" state) ""))))
+          (ws-response-header process 302
+                              (cons "Location" location)
+                              '("Access-Control-Allow-Origin" . "*"))
+          (ws-send process ""))
+      (progn
+        (ws-response-header process 200
+                            '("Content-Type" . "application/json")
+                            '("Access-Control-Allow-Origin" . "*"))
+        (ws-send process (json-encode `((code . ,code))))))
+    (throw 'close-connection nil)))
+;; patch for web-server auth
+(defun mcp-server--ignore-bearer-error (orig-fun proc message &rest args)
+  "Ignore Bearer auth errors in web-server."
+  (unless (and (stringp message)
+               (string-match-p "un-support protocol" message))
+    (apply orig-fun proc message args)))
+
+(advice-add 'ws-error :around #'mcp-server--ignore-bearer-error)
 
 ;;;###autoload
 (defun mcp-server-start (project-root &optional port)
@@ -488,10 +579,18 @@ Returns formatted response string."
     (error "web-server package not available"))
   (when mcp-server--server (mcp-server-stop))
   (setq mcp-server--project-root (file-truename (expand-file-name project-root)))
-  (let* ((server (ws-start
-                  `(((:GET . "^/reload$") . ,#'mcp-server--handle-reload)
-                    ((:POST . "^/mcp.*") . ,#'mcp-server--handle-post))
-                  (or port 0) nil :host "127.0.0.1")))
+(let* ((server (ws-start
+                `(((:GET . "^/\\.well-known/oauth-protected-resource$") . ,#'mcp-server--handle-oauth-protected-resource)
+                  ((:GET . "^/\\.well-known/oauth-authorization-server$") . ,#'mcp-server--handle-oauth-metadata)
+                  ((:GET . "^/\\.well-known/openid-configuration$") . ,#'mcp-server--handle-oauth-metadata)
+                  ((:POST . "^/register$") . ,#'mcp-server--handle-register)
+                  ((:POST . "^/token$") . ,#'mcp-server--handle-token)
+                  ((:GET . "^/authorize.*") . ,#'mcp-server--handle-authorize)
+                  ((:GET . "^/reload$") . ,#'mcp-server--handle-reload)
+                  ((:POST . "^/mcp.*") . ,#'mcp-server--handle-post)
+                  ((:POST . "^/.*") . ,#'mcp-server--handle-404)
+                  ((:GET . "^/.*") . ,#'mcp-server--handle-404))
+                (or port 0) nil :host "127.0.0.1")))
     (setq mcp-server--server server
           mcp-server--port (process-contact (ws-process server) :service))
     (message "MCP Server started on port %d" mcp-server--port)
