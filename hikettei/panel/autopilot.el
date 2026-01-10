@@ -69,11 +69,13 @@
 (defun mp--setup-autopilot (session)
   "Setup Autopilot mode with Activity Panel.
 SESSION is the current mcp-session."
+  ;; Ensure autorevert is loaded
+  (require 'autorevert nil t)
   ;; Save current auto-revert settings and enable silent auto-revert
   (setq mp--autopilot-saved-revert-settings
-        (list (cons 'global-auto-revert-mode global-auto-revert-mode)
-              (cons 'auto-revert-verbose auto-revert-verbose)
-              (cons 'auto-revert-check-vc-info auto-revert-check-vc-info)))
+        (list (cons 'global-auto-revert-mode (and (boundp 'global-auto-revert-mode) global-auto-revert-mode))
+              (cons 'auto-revert-verbose (and (boundp 'auto-revert-verbose) auto-revert-verbose))
+              (cons 'auto-revert-check-vc-info (and (boundp 'auto-revert-check-vc-info) auto-revert-check-vc-info))))
   (setq auto-revert-verbose nil)
   (setq auto-revert-check-vc-info nil)
   (global-auto-revert-mode 1)

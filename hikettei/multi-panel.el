@@ -101,6 +101,9 @@
 ;;; Window Protection
 ;;; ============================================================
 
+(defvar mp--bypass-window-protection nil
+  "When non-nil, bypass window protection checks in delete-window advice.")
+
 (defun mp--protected-window-p (window)
   "Return t if WINDOW is a protected multi-panel window."
   (and (window-live-p window)
@@ -111,11 +114,22 @@
 
 (defun mp--delete-window-advice (orig-fn &optional window)
   "Advice for `delete-window' to protect multi-panel layout.
-If WINDOW is protected, show a message instead of deleting."
-  (let ((win (or window (selected-window))))
-    (if (mp--protected-window-p win)
-        (message "Cannot delete protected window. Use toggle commands instead.")
-      (funcall orig-fn window))))
+If WINDOW is protected or deletion would leave only protected windows, block it."
+  (let* ((win (or window (selected-window)))
+         (other-windows (delq win (window-list)))
+         (non-protected-remaining (cl-remove-if #'mp--protected-window-p other-windows)))
+    (cond
+     ;; Bypass protection if internal toggle
+     (mp--bypass-window-protection
+      (funcall orig-fn window))
+     ;; Don't delete protected windows
+     ((mp--protected-window-p win)
+      (message "Cannot delete protected window. Use toggle commands instead."))
+     ;; Don't delete if it would leave only protected windows
+     ((null non-protected-remaining)
+      (message "Cannot delete last non-protected window."))
+     (t
+      (funcall orig-fn window)))))
 
 (advice-add 'delete-window :around #'mp--delete-window-advice)
 
@@ -219,40 +233,62 @@ If WINDOW is protected, show a message instead of deleting."
 (defun mp--hide-neotree ()
   "Hide NeoTree side panel."
   (when (and mp--neotree-visible (fboundp 'neotree-hide))
-    (neotree-hide)
+    (let ((mp--bypass-window-protection t))
+      (neotree-hide))
     (setq mp--neotree-window nil)
     (setq mp--neotree-visible nil)))
 
 ;;; ============================================================
-;;; Layout Management
+;;; Layout Management  
 ;;; ============================================================
 
-(defun mp--setup-base-layout (session &optional resume)
+(defun mp--cleanup-stale-windows ()
+  "Clean up any stale multi-panel windows and buffers."
+  ;; Kill old feat tabs buffer to force fresh creation
+  (let ((tab-buf (get-buffer "*MP Feat Tabs*")))
+    (when tab-buf
+      ;; First, undedicate and unprotect all windows showing this buffer
+      (dolist (win (get-buffer-window-list tab-buf nil t))
+        (set-window-parameter win 'mp-protected nil)
+        (set-window-parameter win 'no-delete-other-windows nil)
+        (set-window-dedicated-p win nil))
+      ;; Kill the buffer
+      (kill-buffer tab-buf)))
+  ;; Reset all window references
+  (setq mp--feat-tab-bar-window nil)
+  (setq mp--workarea-window nil)
+  (setq mp--neotree-window nil) 
+  (setq mp--ai-chat-window nil)
+  (setq mp--ai-chat-visible nil)
+  (setq mp--neotree-visible nil))
+
+(cl-defun mp--setup-base-layout (session &optional resume)
   "Setup the base multi-panel layout for SESSION.
 If RESUME is non-nil, resume the agent session."
-  (delete-other-windows)
+  ;; Clean up any stale windows/buffers first (this resets all refs)
+  (mp--cleanup-stale-windows)
+  
+  ;; Delete other windows to start fresh
+  (ignore-errors (delete-other-windows))
+  
   (let ((workspace (if (and session (fboundp 'ai-session-workspace))
                        (ai-session-workspace session)
                      default-directory)))
 
-    ;; Main window becomes WorkArea base
-    (setq mp--workarea-window (selected-window))
+    ;; Split for Feat Tab Bar at top (current window becomes small tab bar)
+    (let ((workarea-win (split-window-below mp--feat-tab-bar-height)))
+      ;; Current window is now the tab bar (small, at top)
+      (setq mp--feat-tab-bar-window (selected-window))
+      (switch-to-buffer (mp--setup-feat-tab-bar))
+      (set-window-dedicated-p mp--feat-tab-bar-window t)
+      (set-window-parameter mp--feat-tab-bar-window 'no-delete-other-windows t)
+      (set-window-parameter mp--feat-tab-bar-window 'mp-protected t)
+      (window-preserve-size mp--feat-tab-bar-window nil t)
 
-    ;; Split for Feat Tab Bar at top
-    (split-window-below mp--feat-tab-bar-height)
-    (setq mp--feat-tab-bar-window (selected-window))
-    (switch-to-buffer (mp--setup-feat-tab-bar))
-    (set-window-dedicated-p mp--feat-tab-bar-window t)
-    ;; Protect tab bar window and preserve its size
-    (set-window-parameter mp--feat-tab-bar-window 'no-delete-other-windows t)
-    (set-window-parameter mp--feat-tab-bar-window 'mp-protected t)
-    (window-preserve-size mp--feat-tab-bar-window nil t)  ; preserve height
-
-    ;; Move to WorkArea below
-    (other-window 1)
-    (setq mp--workarea-window (selected-window))
-    ;; WorkArea should not be deleted but can be split
-    (set-window-parameter mp--workarea-window 'no-delete-other-windows t)
+      ;; Setup WorkArea (the larger window below)
+      (setq mp--workarea-window workarea-win)
+      (select-window mp--workarea-window)
+      (set-window-parameter mp--workarea-window 'no-delete-other-windows t))
 
     ;; Setup NeoTree (left side window)
     (when (fboundp 'neotree-dir)
@@ -294,6 +330,18 @@ If RESUME is non-nil, resume the agent session."
           (toggles (mp--render-toggle-buttons)))
       (concat tabs-str "  " toggles))))
 
+(defvar mp--toggle-ai-keymap
+  (let ((map (make-sparse-keymap)))
+    (define-key map [mouse-1] #'mp-toggle-ai-chat)
+    map)
+  "Keymap for AI Chat toggle button.")
+
+(defvar mp--toggle-neo-keymap
+  (let ((map (make-sparse-keymap)))
+    (define-key map [mouse-1] #'mp-toggle-neotree)
+    map)
+  "Keymap for NeoTree toggle button.")
+
 (defun mp--render-toggle-buttons ()
   "Render toggle buttons for NeoTree and AI Chat."
   (let* ((neo-face (if mp--neotree-visible 'mp-toggle-on-face 'mp-toggle-off-face))
@@ -309,16 +357,6 @@ If RESUME is non-nil, resume the agent session."
                              'keymap mp--toggle-ai-keymap
                              'help-echo "Toggle AI Chat (C-x j c)")))
     (concat neo-btn " " ai-btn)))
-
-(defvar mp--toggle-ai-keymap
-  (let ((map (make-sparse-keymap)))
-    (define-key map [mouse-1] #'mp-toggle-ai-chat)
-    map))
-
-(defvar mp--toggle-neo-keymap
-  (let ((map (make-sparse-keymap)))
-    (define-key map [mouse-1] #'mp-toggle-neotree)
-    map))
 
 (defun mp--feat-tab-keymap (id)
   "Create keymap for feat tab with ID."
@@ -475,7 +513,7 @@ Saves buffer list and window layout within the WorkArea."
   "Toggle AI Chat visibility."
   (interactive)
   (if (and mp--ai-chat-window (window-live-p mp--ai-chat-window))
-      (progn
+      (let ((mp--bypass-window-protection t))
         (delete-window mp--ai-chat-window)
         (setq mp--ai-chat-window nil)
         (setq mp--ai-chat-visible nil))
@@ -538,24 +576,26 @@ If RESUME is non-nil, resume the agent session."
 ;;; ============================================================
 
 ;;;###autoload
-(defun mp-initialize (session &optional resume)
+(defun mp-initialize (&optional session resume)
   "Initialize multi-panel layout for SESSION.
-If RESUME is non-nil, resume the agent session."
+If RESUME is non-nil, resume the agent session.
+SESSION defaults to `ai-session--current' if not provided."
   (interactive)
-  (when (= 0 (hash-table-count mp--feat-tabs))
-    (mp--load-panels))
+  (let ((session (or session (and (boundp 'ai-session--current) ai-session--current))))
+    (when (= 0 (hash-table-count mp--feat-tabs))
+      (mp--load-panels))
 
-  (mp--setup-base-layout session resume)
+    (mp--setup-base-layout session resume)
 
-  (if (> (hash-table-count mp--feat-tabs) 0)
-      ;; Always start with autopilot if available, otherwise first tab
-      (let ((start-tab (if (gethash 'autopilot mp--feat-tabs)
-                           'autopilot
-                         (car mp--feat-tab-order))))
-        (mp-switch-to start-tab))
-    (when (window-live-p mp--workarea-window)
-      (select-window mp--workarea-window)
-      (switch-to-buffer (get-buffer-create "*WorkArea*")))))
+    (if (> (hash-table-count mp--feat-tabs) 0)
+        ;; Always start with autopilot if available, otherwise first tab
+        (let ((start-tab (if (gethash 'autopilot mp--feat-tabs)
+                             'autopilot
+                           (car mp--feat-tab-order))))
+          (mp-switch-to start-tab))
+      (when (window-live-p mp--workarea-window)
+        (select-window mp--workarea-window)
+        (switch-to-buffer (get-buffer-create "*WorkArea*"))))))
 
 (provide 'multi-panel)
 
