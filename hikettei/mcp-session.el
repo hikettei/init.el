@@ -1,7 +1,7 @@
 ;;; mcp-session.el --- AI Development Session Management -*- lexical-binding: t; -*-
 
 ;; Author: hikettei
-;; Version: 0.1.0
+;; Version: 0.2.0
 ;; Package-Requires: ((emacs "28.1"))
 ;; Keywords: tools, ai, session
 
@@ -12,7 +12,7 @@
 ;; - Create sessions with AI agent selection (Gemini, Codex, Claude)
 ;; - MCP server integration per workspace
 ;; - Tab-based session management
-;; - Multi-pane layout for development
+;; - Delegates layout to multi-panel.el
 ;;
 
 ;;; Code:
@@ -58,14 +58,6 @@
 ;;; Data Structures
 ;;; ============================================================
 
-(cl-defstruct ai-session-inner-tab
-  "Structure representing an inner tab within a session."
-  id                    ; Unique tab ID
-  name                  ; Tab display name
-  type                  ; Tab type: 'terminal, 'file, 'chat, 'main
-  buffer                ; Associated buffer
-  icon)                 ; Icon for the tab
-
 (cl-defstruct ai-session
   "Structure representing an AI development session."
   id                    ; Unique session ID
@@ -78,9 +70,7 @@
   tab-index             ; Tab-bar index
   created-at            ; Creation timestamp
   session-id            ; Agent's session ID for resume
-  buffers               ; List of session-related buffers
-  inner-tabs            ; List of inner tabs (ai-session-inner-tab)
-  current-inner-tab)    ; Current active inner tab index
+  buffers)              ; List of session-related buffers
 
 (defvar ai-session--sessions (make-hash-table :test 'equal)
   "Hash table of active sessions by ID.")
@@ -293,11 +283,6 @@
     ("Codex" "💻")
     (_ "📝")))
 
-(defun ai-session--confirm-close-tab (tab-index tab-name)
-  "Confirm and close tab at TAB-INDEX with TAB-NAME."
-  (when (yes-or-no-p (format "Close session '%s'? " tab-name))
-    (tab-bar-close-tab tab-index)))
-
 (defun ai-session--tab-bar-tab-name-format (tab i)
   "Format TAB name at index I for display in tab-bar."
   (let* ((current-p (eq (car tab) 'current-tab))
@@ -312,10 +297,8 @@
 (defun ai-session--new-session-from-tab-bar ()
   "Create a new session from tab-bar [+] button."
   (interactive)
-  ;; Create a new tab first to preserve current session
   (tab-bar-new-tab)
   (tab-bar-rename-tab "✨ New Session")
-  ;; Set flag so ai-session-create will reuse this tab
   (setq ai-session--creating-from-wizard t)
   (if (fboundp 'session-wizard)
       (session-wizard)
@@ -331,10 +314,9 @@
       (funcall orig-fun tab-number to-tab))))
 
 (defun ai-session--on-tab-switch ()
-  "Called when switching tabs. Updates NeoTree to show session's workspace."
+  "Called when switching tabs. Updates current session."
   (when-let* ((current-tab (tab-bar--current-tab))
               (tab-name (alist-get 'name current-tab)))
-    ;; Find session matching this tab
     (let ((found-session nil))
       (maphash (lambda (_id session)
                  (let* ((agent (ai-session-agent session))
@@ -344,21 +326,8 @@
                      (setq found-session session))))
                ai-session--sessions)
       (if found-session
-          ;; Session tab - update NeoTree to show workspace
-          (progn
-            (setq ai-session--current found-session)
-            (let ((workspace (ai-session-workspace found-session)))
-              (when (fboundp 'neotree-dir)
-                ;; Close and reopen NeoTree with new directory
-                (when (and (fboundp 'neo-global--window-exists-p)
-                           (neo-global--window-exists-p))
-                  (neotree-hide))
-                (neotree-dir workspace)
-                (when (fboundp 'neotree-refresh)
-                  (neotree-refresh))
-                ;; Return focus to previous window
-                (other-window 1))))
-        ;; Not a session tab (e.g., New Session) - hide NeoTree
+          (setq ai-session--current found-session)
+        ;; Not a session tab - hide NeoTree
         (when (and (fboundp 'neo-global--window-exists-p)
                    (neo-global--window-exists-p))
           (neotree-hide))))))
@@ -368,16 +337,13 @@
   (tab-bar-mode 1)
   (setq tab-bar-show t)
   (setq tab-bar-new-tab-choice nil)
-  (setq tab-bar-close-button-show t)  ; Use built-in close button
+  (setq tab-bar-close-button-show t)
   (setq tab-bar-tab-hints nil)
   (setq tab-bar-auto-width nil)
   (setq tab-bar-tab-name-format-function #'ai-session--tab-bar-tab-name-format)
-  ;; Add confirmation advice
   (advice-add 'tab-bar-close-tab :around #'ai-session--confirm-before-close-tab)
-  ;; Add tab switch hook
   (add-hook 'tab-bar-tab-post-select-functions
             (lambda (&rest _) (ai-session--on-tab-switch)))
-  ;; Add [+] button at the end (our custom one that opens session wizard)
   (setq tab-bar-format '(tab-bar-format-tabs ai-session--tab-bar-add-button)))
 
 (defun ai-session--tab-bar-add-button ()
@@ -404,196 +370,10 @@ If REUSE-CURRENT is non-nil, rename current tab instead of creating new one."
 (defun ai-session--close-tab (session)
   "Close the tab for SESSION."
   (when-let ((idx (ai-session-tab-index session)))
-    (tab-bar-close-tab (1+ idx))))  ; tab-bar uses 1-indexed
+    (tab-bar-close-tab (1+ idx))))
 
 ;;; ============================================================
-;;; Inner Tab System (Second-level tabs within session)
-;;; ============================================================
-
-(defface ai-session-inner-tab-active-face
-  '((t :background "#44475a" :foreground "#f8f8f2" :weight bold :box (:line-width -1 :color "#6272a4")))
-  "Face for active inner tab."
-  :group 'ai-session)
-
-(defface ai-session-inner-tab-inactive-face
-  '((t :background "#282a36" :foreground "#6272a4"))
-  "Face for inactive inner tab."
-  :group 'ai-session)
-
-(defface ai-session-inner-tab-bar-face
-  '((t :background "#21222c" :extend t))
-  "Face for inner tab bar background."
-  :group 'ai-session)
-
-(defvar-local ai-session--inner-tab-line nil
-  "Header line format for inner tabs.")
-
-(defun ai-session--generate-inner-tab-id ()
-  "Generate unique inner tab ID."
-  (format "itab-%s" (format-time-string "%H%M%S%3N")))
-
-(defun ai-session--create-inner-tab (session name type buffer &optional icon)
-  "Create an inner tab for SESSION with NAME, TYPE, BUFFER and optional ICON."
-  (let ((tab (make-ai-session-inner-tab
-              :id (ai-session--generate-inner-tab-id)
-              :name name
-              :type type
-              :buffer buffer
-              :icon (or icon (ai-session--get-icon-for-type type)))))
-    (push tab (ai-session-inner-tabs session))
-    (setf (ai-session-inner-tabs session)
-          (nreverse (ai-session-inner-tabs session)))
-    tab))
-
-(defun ai-session--get-icon-for-type (type)
-  "Get icon for inner tab TYPE."
-  (pcase type
-    ('terminal "")
-    ('file "")
-    ('chat "")
-    ('main "")
-    (_ "")))
-
-(defface ai-session-inner-tab-hover-face
-  '((t :underline (:color "#6272a4" :style line)))
-  "Face for inner tab hover - subtle underline only."
-  :group 'ai-session)
-
-(defun ai-session--render-inner-tabs ()
-  "Render inner tabs as header-line for current session."
-  (when ai-session--current
-    (let* ((tabs (ai-session-inner-tabs ai-session--current))
-           (current-idx (or (ai-session-current-inner-tab ai-session--current) 0))
-           (tab-strings '()))
-      ;; Build tab strings
-      (let ((idx 0))
-        (dolist (tab tabs)
-          (let* ((active (= idx current-idx))
-                 (icon (ai-session-inner-tab-icon tab))
-                 (name (ai-session-inner-tab-name tab))
-                 (face (if active 'ai-session-inner-tab-active-face 'ai-session-inner-tab-inactive-face))
-                 (tab-str (propertize (format " %s %s " icon name)
-                                      'face face
-                                      'pointer 'hand
-                                      'local-map (ai-session--inner-tab-keymap idx)
-                                      'help-echo (format "Click to switch to %s" name))))
-            (push tab-str tab-strings))
-          (setq idx (1+ idx))))
-      ;; Add [+] button
-      (push (propertize " + "
-                        'face 'ai-session-tab-add-face
-                        'pointer 'hand
-                        'local-map (let ((map (make-sparse-keymap)))
-                                     (define-key map [header-line mouse-1] #'ai-session-add-inner-tab)
-                                     map)
-                        'help-echo "Add new tab")
-            tab-strings)
-      ;; Combine with background
-      (concat (propertize " " 'face 'ai-session-inner-tab-bar-face)
-              (mapconcat #'identity (nreverse tab-strings) " ")
-              (propertize " " 'display '(space :align-to right) 'face 'ai-session-inner-tab-bar-face)))))
-
-(defun ai-session--inner-tab-keymap (idx)
-  "Create keymap for inner tab at IDX."
-  (let ((map (make-sparse-keymap)))
-    (define-key map [header-line mouse-1]
-                (lambda () (interactive) (ai-session-switch-inner-tab idx)))
-    map))
-
-(defun ai-session-switch-inner-tab (idx)
-  "Switch to inner tab at IDX."
-  (interactive "nTab index: ")
-  (when ai-session--current
-    (let* ((tabs (ai-session-inner-tabs ai-session--current))
-           (tab (nth idx tabs)))
-      (when tab
-        (setf (ai-session-current-inner-tab ai-session--current) idx)
-        (let ((buf (ai-session-inner-tab-buffer tab)))
-          (when (buffer-live-p buf)
-            (switch-to-buffer buf)))
-        (ai-session--update-all-header-lines)))))
-
-(defun ai-session--update-all-header-lines ()
-  "Update header lines in all session buffers."
-  (when ai-session--current
-    (dolist (tab (ai-session-inner-tabs ai-session--current))
-      (let ((buf (ai-session-inner-tab-buffer tab)))
-        (when (buffer-live-p buf)
-          (with-current-buffer buf
-            (setq header-line-format '(:eval (ai-session--render-inner-tabs)))))))))
-
-(defun ai-session-add-inner-tab ()
-  "Add a new inner tab to current session."
-  (interactive)
-  (when ai-session--current
-    (let ((choice (completing-read "New tab type: "
-                                   '("Terminal" "Open File" "Chat")
-                                   nil t)))
-      (pcase choice
-        ("Terminal" (ai-session--add-terminal-tab))
-        ("Open File" (ai-session--add-file-tab))
-        ("Chat" (ai-session--add-chat-tab))))))
-
-(defun ai-session--add-terminal-tab ()
-  "Add a new terminal tab."
-  (when ai-session--current
-    (let* ((workspace (ai-session-workspace ai-session--current))
-           (buf-name (format "*Terminal %d: %s*"
-                             (1+ (length (seq-filter
-                                          (lambda (t) (eq (ai-session-inner-tab-type t) 'terminal))
-                                          (ai-session-inner-tabs ai-session--current))))
-                             (ai-session-title ai-session--current)))
-           (buf (get-buffer-create buf-name)))
-      (with-current-buffer buf
-        (unless (derived-mode-p 'vterm-mode 'term-mode)
-          (if (fboundp 'vterm-mode)
-              (progn
-                (vterm-mode)
-                (vterm-send-string (format "cd %s\n" (shell-quote-argument workspace))))
-            (term "/bin/zsh"))))
-      (ai-session--create-inner-tab ai-session--current "Terminal" 'terminal buf)
-      (setf (ai-session-current-inner-tab ai-session--current)
-            (1- (length (ai-session-inner-tabs ai-session--current))))
-      (switch-to-buffer buf)
-      (ai-session--update-all-header-lines))))
-
-(defun ai-session--add-file-tab ()
-  "Add a new file tab."
-  (when ai-session--current
-    (let* ((workspace (ai-session-workspace ai-session--current))
-           (default-directory workspace)
-           (file (read-file-name "Open file: " workspace)))
-      (when file
-        (let ((buf (find-file-noselect file)))
-          (ai-session--create-inner-tab
-           ai-session--current
-           (file-name-nondirectory file)
-           'file
-           buf
-           "")
-          (setf (ai-session-current-inner-tab ai-session--current)
-                (1- (length (ai-session-inner-tabs ai-session--current))))
-          (switch-to-buffer buf)
-          (ai-session--update-all-header-lines))))))
-
-(defun ai-session--add-chat-tab ()
-  "Add a new chat tab."
-  (when ai-session--current
-    (let* ((buf-name (format "*Chat: %s*" (ai-session-title ai-session--current)))
-           (buf (get-buffer-create buf-name)))
-      (with-current-buffer buf
-        (let ((inhibit-read-only t))
-          (erase-buffer)
-          (insert (format "Chat (%s)\n" (ai-session-agent ai-session--current)))
-          (insert "─────────────────────────\n\n")))
-      (ai-session--create-inner-tab ai-session--current "Chat" 'chat buf)
-      (setf (ai-session-current-inner-tab ai-session--current)
-            (1- (length (ai-session-inner-tabs ai-session--current))))
-      (switch-to-buffer buf)
-      (ai-session--update-all-header-lines))))
-
-;;; ============================================================
-;;; Multi-pane Layout
+;;; Layout Management (delegates to multi-panel)
 ;;; ============================================================
 
 (defun ai-session--build-agent-command (session &optional resume)
@@ -606,11 +386,10 @@ If RESUME is non-nil, use resume_args with session_id."
                  (plist-get config :args)))
          (session-id (ai-session-session-id session))
          (mcp-config-file (ai-session-mcp-config-file session))
-         ;; Build MCP args based on agent type
          (mcp-args (when mcp-config-file
                      (pcase executable
                        ("claude" (format "--mcp-config %s" mcp-config-file))
-                       (_ "")))))  ; gemini/codex use different config method
+                       (_ "")))))
     (string-trim
      (if resume
          (format "%s %s %s %s"
@@ -624,107 +403,27 @@ If RESUME is non-nil, use resume_args with session_id."
                (mapconcat #'identity args " "))))))
 
 (defun ai-session--setup-layout (session &optional resume)
-  "Setup multi-pane layout for SESSION.
-If RESUME is non-nil, resume existing session.
-Layout:
-+----------+------------------------------------+
-|          |                                    |
-| NeoTree  |   AI Chat (vterm with agent)       |
-|          |                                    |
-+----------+------------------------------------+"
+  "Setup layout for SESSION. Delegates to multi-panel if available."
+  (if (fboundp 'mp-initialize)
+      (mp-initialize session)
+    (ai-session--setup-fallback-layout session resume)))
+
+(defun ai-session--setup-fallback-layout (session &optional resume)
+  "Simple fallback layout when multi-panel is not available."
   (delete-other-windows)
-
-  ;; Initialize inner tabs list
-  (setf (ai-session-inner-tabs session) nil)
-  (setf (ai-session-current-inner-tab session) 0)
-
   (let* ((workspace (ai-session-workspace session))
-         (agent-cmd (ai-session--build-agent-command session resume))
-         (terminal-buffer nil))
-
-    ;; Open NeoTree on the left first (1/7 of frame width, AI Chat gets 6/7)
-    (when (fboundp 'neotree-dir)
-      (setq neo-window-width (/ (frame-width) 7))
-      (neotree-dir workspace))
-
-    ;; Move to the main area (right of NeoTree)
-    (other-window 1)
-
-    ;; Main window - AI Chat (vterm with agent)
-    (let ((cmd (format "cd %s && %s" (shell-quote-argument workspace) agent-cmd)))
-      (cond
-       ((fboundp 'vterm)
-        (vterm)
-        (setq terminal-buffer (current-buffer))
-        (rename-buffer (format "*AI Chat: %s*" (ai-session-title session)) t)
-        ;; Wait for vterm to initialize before sending command
-        (run-at-time 0.1 nil
-                     (lambda (c)
-                       (when (and (boundp 'vterm--process)
-                                  vterm--process)
-                         (vterm-send-string (concat c "\n"))))
-                     cmd))
-       ((fboundp 'multi-term)
-        (multi-term)
-        (setq terminal-buffer (current-buffer))
-        (rename-buffer (format "*AI Chat: %s*" (ai-session-title session)) t)
-        (term-send-raw-string (concat cmd "\n")))
-       (t
-        (term "/bin/zsh")
-        (setq terminal-buffer (current-buffer))
-        (rename-buffer (format "*AI Chat: %s*" (ai-session-title session)) t)
-        (term-send-raw-string (concat cmd "\n")))))
-
-    ;; Create inner tab for AI Chat terminal
-    (when terminal-buffer
-      (ai-session--create-inner-tab session "AI Chat" 'terminal terminal-buffer ""))
-
-    ;; Track buffers
-    (setf (ai-session-buffers session)
-          (list terminal-buffer))
-
-    ;; Setup header-line for inner tabs in all buffers
-    (ai-session--update-all-header-lines)))
-
-;;; ============================================================
-;;; Session Main Mode
-;;; ============================================================
-
-(defvar ai-session-main-mode-map
-  (let ((map (make-sparse-keymap)))
-    (define-key map (kbd "f") #'ai-session-open-file)
-    (define-key map (kbd "n") #'ai-session-toggle-neotree)
-    (define-key map (kbd "t") #'ai-session-focus-terminal)
-    (define-key map (kbd "c") #'ai-session-focus-chat)
-    (define-key map (kbd "q") #'ai-session-close)
-    ;; Inner tab navigation
-    (define-key map (kbd "M-<right>") #'ai-session-next-inner-tab)
-    (define-key map (kbd "M-<left>") #'ai-session-prev-inner-tab)
-    (define-key map (kbd "+") #'ai-session-add-inner-tab)
-    map)
-  "Keymap for `ai-session-main-mode'.")
-
-(defun ai-session-next-inner-tab ()
-  "Switch to next inner tab."
-  (interactive)
-  (when ai-session--current
-    (let* ((tabs (ai-session-inner-tabs ai-session--current))
-           (current (or (ai-session-current-inner-tab ai-session--current) 0))
-           (next (mod (1+ current) (length tabs))))
-      (ai-session-switch-inner-tab next))))
-
-(defun ai-session-prev-inner-tab ()
-  "Switch to previous inner tab."
-  (interactive)
-  (when ai-session--current
-    (let* ((tabs (ai-session-inner-tabs ai-session--current))
-           (current (or (ai-session-current-inner-tab ai-session--current) 0))
-           (prev (mod (1- current) (length tabs))))
-      (ai-session-switch-inner-tab prev))))
-
-(define-derived-mode ai-session-main-mode special-mode "AI-Session"
-  "Major mode for AI session main buffer."
-  (setq buffer-read-only t))
+         (agent-cmd (ai-session--build-agent-command session resume)))
+    ;; Just open vterm with the agent
+    (when (fboundp 'vterm)
+      (vterm)
+      (rename-buffer (format "*AI Chat: %s*" (ai-session-title session)) t)
+      (run-at-time 0.1 nil
+                   (lambda (ws cmd)
+                     (when (and (boundp 'vterm--process) vterm--process)
+                       (vterm-send-string (format "cd %s && %s\n"
+                                                  (shell-quote-argument ws) cmd))))
+                   workspace agent-cmd))
+    (setf (ai-session-buffers session) (list (current-buffer)))))
 
 ;;; ============================================================
 ;;; Interactive Commands
@@ -734,10 +433,7 @@ Layout:
 (defun ai-session-new ()
   "Create a new AI development session interactively."
   (interactive)
-  ;; Setup tab-bar if not already
   (ai-session--setup-tab-bar)
-
-  ;; Prompt for session details
   (let* ((agent (completing-read "Select AI Agent: "
                                  ai-session-available-agents
                                  nil t nil nil "Claude"))
@@ -761,35 +457,21 @@ Layout:
                    :tab-index nil
                    :created-at (current-time)
                    :session-id nil
-                   :buffers nil
-                   :inner-tabs nil
-                   :current-inner-tab 0)))
+                   :buffers nil)))
 
-    ;; Clear the flag
     (setq ai-session--creating-from-wizard nil)
-
-    ;; Register session
     (ai-session--register session)
     (setq ai-session--current session)
-
-    ;; Setup tab-bar if not already
     (ai-session--setup-tab-bar)
-
-    ;; Create tab (reuse current if coming from wizard's [+] button)
     (ai-session--create-tab session reuse-tab)
 
-    ;; Generate MCP config file for this session
+    ;; Generate MCP config and start server
     (setf (ai-session-mcp-config-file session)
           (ai-session--generate-mcp-config session))
-
-    ;; Start MCP server
     (setf (ai-session-mcp-process session)
           (ai-session--start-mcp-server workspace))
 
-    ;; Save to history
     (ai-session--add-to-history session)
-
-    ;; Setup layout and launch agent
     (ai-session--setup-layout session nil)
 
     (message "Session '%s' created with %s" title agent)
@@ -808,32 +490,19 @@ Layout:
                    :tab-index nil
                    :created-at (current-time)
                    :session-id session-id
-                   :buffers nil
-                   :inner-tabs nil
-                   :current-inner-tab 0)))
+                   :buffers nil)))
 
-    ;; Register session
     (ai-session--register session)
     (setq ai-session--current session)
-
-    ;; Setup tab-bar if not already
     (ai-session--setup-tab-bar)
-
-    ;; Create tab
     (ai-session--create-tab session)
 
-    ;; Generate MCP config file for this session
     (setf (ai-session-mcp-config-file session)
           (ai-session--generate-mcp-config session))
-
-    ;; Start MCP server
     (setf (ai-session-mcp-process session)
           (ai-session--start-mcp-server workspace))
 
-    ;; Update last accessed
     (ai-session--update-last-accessed session)
-
-    ;; Setup layout and launch agent with resume
     (ai-session--setup-layout session t)
 
     (message "Session '%s' resumed with %s" title agent)
@@ -845,27 +514,15 @@ Layout:
   (let ((sess (or session ai-session--current)))
     (when sess
       (when (y-or-n-p (format "Close session '%s'? " (ai-session-title sess)))
-        ;; Stop MCP server
         (ai-session--stop-mcp-server sess)
-
-        ;; Cleanup MCP config file
         (ai-session--cleanup-mcp-config sess)
-
-        ;; Kill session buffers
         (dolist (buf (ai-session-buffers sess))
           (when (buffer-live-p buf)
             (kill-buffer buf)))
-
-        ;; Close tab
         (ai-session--close-tab sess)
-
-        ;; Unregister
         (ai-session--unregister sess)
-
-        ;; Clear current if this was it
         (when (eq sess ai-session--current)
           (setq ai-session--current nil))
-
         (message "Session '%s' closed" (ai-session-title sess))))))
 
 (defun ai-session-list ()
@@ -889,7 +546,7 @@ Layout:
   (call-interactively #'tab-bar-switch-to-tab))
 
 ;;; ============================================================
-;;; Layout Navigation
+;;; Navigation Commands
 ;;; ============================================================
 
 (defun ai-session-open-file ()
@@ -903,18 +560,7 @@ Layout:
   "Toggle neotree in the current session's workspace."
   (interactive)
   (when (and ai-session--current (fboundp 'neotree-toggle))
-    (let ((workspace (ai-session-workspace ai-session--current)))
-      (neotree-dir workspace))))
-
-(defun ai-session-focus-terminal ()
-  "Focus the terminal window."
-  (interactive)
-  (let ((term-buffer (seq-find (lambda (buf)
-                                 (string-match-p "\\*terminal\\|\\*term"
-                                                 (buffer-name buf)))
-                               (buffer-list))))
-    (when term-buffer
-      (pop-to-buffer term-buffer))))
+    (neotree-dir (ai-session-workspace ai-session--current))))
 
 (defun ai-session-focus-chat ()
   "Focus the AI chat window."
