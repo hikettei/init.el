@@ -917,6 +917,9 @@ Each entry is (workspace . session-data).")
 ;;; ============================================================
 
 ;;;###autoload
+(defvar sw--untitled-counter 1
+  "Counter for untitled sessions.")
+
 (defun session-wizard ()
   "Open the session creation wizard."
   (interactive)
@@ -924,10 +927,11 @@ Each entry is (workspace . session-data).")
   (sw--stop-nyan-animation)
   ;; Load agents from config files
   (sw--load-agents)
-  ;; Reset state
+  ;; Reset state with defaults
   (setq sw--current-agent 0)
-  (setq sw--session-title "")
-  (setq sw--workspace "")
+  (setq sw--session-title (format "Untitled %d" sw--untitled-counter))
+  (setq sw--untitled-counter (1+ sw--untitled-counter))
+  (setq sw--workspace (expand-file-name default-directory))
   (setq sw--current-field 'agent)
   (setq sw--nyan-frame 1)
   (setq sw--past-sessions nil)
