@@ -16,7 +16,7 @@
 (include "4common-lisp.el")     ;; Emacs as a Common Lisp IDE
 (include "5python.el")          ;; Python Development Environment
 (include "6markdown.el")        ;; Markdown Editing Environment
-(include "7eaf.el")             ;; Emacs Application Framework Setup
+; (include "7eaf.el")             ;; Emacs Application Framework Setup
 ;(include "8claude-code.el")     ;; Claude Code Configurations
 (include "mcp/file-editor.el")  ;; MCP File Editor Review UI
 (include "mcp/mcp-server.el")   ;; MCP HTTP Server for AI Agents
