@@ -443,24 +443,25 @@ ENV-ALIST is ((KEY . VALUE) ...) from agent config."
 
 (defun ai-session--build-agent-command (session &optional resume)
   "Build the command string to launch agent for SESSION.
-If RESUME is non-nil, use resume_args with session_id.
-Includes MCP config flag and environment variables."
+If RESUME is non-nil, append resume_args and session_id.
+Always includes args, MCP config flag, and environment variables."
   (let* ((config (ai-session-agent-config session))
          (executable (plist-get config :executable))
-         (args (if resume
-                   (plist-get config :resume-args)
-                 (plist-get config :args)))
+         (args (plist-get config :args))
+         (resume-args (plist-get config :resume-args))
          (env (plist-get config :env))
          (session-id (ai-session-session-id session))
          (mcp-config-file (ai-session-mcp-config-file session))
          (mcp-args (ai-session--get-mcp-config-flag config mcp-config-file))
          (env-prefix (ai-session--build-env-prefix env))
          (quoted-args (mapconcat #'shell-quote-argument args " "))
+         (quoted-resume-args (mapconcat #'shell-quote-argument resume-args " "))
          (base-cmd (if resume
-                       (format "%s %s %s %s"
+                       (format "%s %s %s %s %s"
                                executable
                                (or mcp-args "")
                                quoted-args
+                               quoted-resume-args
                                (or session-id ""))
                      (format "%s %s %s"
                              executable
