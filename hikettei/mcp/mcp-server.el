@@ -190,13 +190,22 @@ Returns formatted response string."
 ;;; MCP Tools
 ;;; ============================================================
 
+(declare-function activity-panel-add-read-highlight "activity-panel")
+(declare-function activity-panel-active-p "activity-panel")
+
 (defun mcp-server--tool-read-file (args)
-  "Handle emacs_read_file tool."
+  "Handle emacs_read_file tool with Activity Panel integration."
   (condition-case err
       (let ((path (mcp-server--resolve-path
                    (alist-get "file_path" args nil nil #'string=)))
             (offset (or (alist-get "offset" args nil nil #'string=) 0))
             (limit (or (alist-get "limit" args nil nil #'string=) 3000)))
+        ;; Notify Activity Panel of read operation (if active)
+        (when (and (fboundp 'activity-panel-active-p)
+                   (fboundp 'activity-panel-add-read-highlight)
+                   (activity-panel-active-p))
+          (activity-panel-add-read-highlight path (1+ offset) (+ offset limit)))
+        ;; Perform the actual read
         (mcp-server--read-file path offset limit))
     (mcp-path-error (format "Error: %s" (cadr err)))
     (error (format "Error: %s" (error-message-string err)))))
