@@ -94,6 +94,8 @@
   removed-overlays      ; List of overlays for removed lines
   added-overlays        ; List of overlays for added lines (phantom)
   header-overlay        ; Overlay for review header
+  comment-overlays      ; List of overlays for line comments
+  line-comments         ; Alist of (line-number . comment-text)
   decision)             ; 'approve or 'request-changes
 
 (defvar file-editor--current-session nil
@@ -232,15 +234,17 @@ CONTENT is the added line content."
       (let* ((pos (line-beginning-position))
              (ov (make-overlay pos pos buffer))
              (header-text (concat
-                           (propertize ">>> REVIEW PENDING <<<" 'face 'file-editor-status-face)
+                           (propertize " >>> REVIEW PENDING <<< "
+                                       'face '(:background "#ff5555" :foreground "#f8f8f2" :weight bold))
                            "\n"
                            (when ai-comment
-                             (concat (propertize "AI: " 'face 'file-editor-header-face)
-                                     ai-comment "\n"))
-                           (propertize "C-c C-c: Approve | C-c C-k: Reject | M-n/M-p: Navigate"
-                                       'face '(:foreground "#6272a4"))
+                             (concat (propertize (format " AI: %s " ai-comment)
+                                                'face '(:background "#bd93f9" :foreground "#f8f8f2" :weight bold))
+                                     "\n"))
+                           (propertize " C-c C-c: Approve | C-c C-k: Reject | M-n/M-p: Navigate "
+                                       'face '(:background "#44475a" :foreground "#f8f8f2"))
                            "\n"
-                           (propertize (make-string 50 ?─) 'face '(:foreground "#44475a"))
+                           (propertize (make-string 60 ?─) 'face '(:foreground "#6272a4"))
                            "\n")))
         (overlay-put ov 'before-string header-text)
         (overlay-put ov 'file-editor-type 'header)
@@ -304,11 +308,57 @@ CONTENT is the added line content."
     (when (overlayp ov) (delete-overlay ov)))
   (dolist (ov (file-editor-session-added-overlays session))
     (when (overlayp ov) (delete-overlay ov)))
+  (dolist (ov (file-editor-session-comment-overlays session))
+    (when (overlayp ov) (delete-overlay ov)))
   (when-let ((header (file-editor-session-header-overlay session)))
     (when (overlayp header) (delete-overlay header)))
   (setf (file-editor-session-removed-overlays session) nil)
   (setf (file-editor-session-added-overlays session) nil)
+  (setf (file-editor-session-comment-overlays session) nil)
   (setf (file-editor-session-header-overlay session) nil))
+
+;;; ============================================================
+;;; Line Comments
+;;; ============================================================
+
+(defun file-editor--create-comment-overlay (buffer line-num comment-text)
+  "Create comment overlay at LINE-NUM in BUFFER with COMMENT-TEXT."
+  (with-current-buffer buffer
+    (save-excursion
+      (goto-char (point-min))
+      (forward-line (1- line-num))
+      (let* ((end (line-end-position))
+             (ov (make-overlay end end buffer))
+             (display-str (propertize
+                           (concat "\n"
+                                   (propertize "  💬 " 'face '(:foreground "#ff79c6"))
+                                   (propertize comment-text
+                                              'face '(:background "#ffb86c" :foreground "#282a36" :slant italic)))
+                           'face '(:extend t))))
+        (overlay-put ov 'after-string display-str)
+        (overlay-put ov 'file-editor-type 'comment)
+        (overlay-put ov 'file-editor-line line-num)
+        (overlay-put ov 'priority 150)
+        ov))))
+
+(defun file-editor-add-comment ()
+  "Add a comment on the current line."
+  (interactive)
+  (unless file-editor--current-session
+    (user-error "No active review session"))
+  (let* ((session file-editor--current-session)
+         (line-num (line-number-at-pos))
+         (comment-text (read-string (format "Comment for line %d: " line-num))))
+    (when (and comment-text (not (string-empty-p comment-text)))
+      ;; Add to line-comments alist
+      (push (cons line-num comment-text)
+            (file-editor-session-line-comments session))
+      ;; Create overlay
+      (let ((ov (file-editor--create-comment-overlay
+                 (file-editor-session-file-buffer session)
+                 line-num comment-text)))
+        (push ov (file-editor-session-comment-overlays session)))
+      (message "Comment added on line %d" line-num))))
 
 ;;; ============================================================
 ;;; Minor Mode for Review
@@ -320,6 +370,7 @@ CONTENT is the added line content."
     (define-key map (kbd "C-c C-k") #'file-editor-request-changes)
     (define-key map (kbd "M-n") #'file-editor-next-diff)
     (define-key map (kbd "M-p") #'file-editor-prev-diff)
+    (define-key map (kbd "c") #'file-editor-add-comment)
     map)
   "Keymap for `file-editor-review-mode'.")
 
@@ -330,7 +381,7 @@ CONTENT is the added line content."
   :lighter " Review"
   :keymap file-editor-review-mode-map
   (if file-editor-review-mode
-      (message "Review mode: C-c C-c=approve, C-c C-k=reject")
+      (message "Review mode: C-c C-c=approve, C-c C-k=reject, c=comment")
     (message "Review mode disabled")))
 
 ;;; ============================================================
@@ -377,17 +428,22 @@ CONTENT is the added line content."
 ;;; Decision Actions
 ;;; ============================================================
 
-(defun file-editor--build-result (session decision)
-  "Build result alist for SESSION with DECISION."
+(defun file-editor--build-result (session decision feedback line-comments)
+  "Build result alist for SESSION with DECISION, FEEDBACK, and LINE-COMMENTS."
   `((session_id . ,(file-editor-session-id session))
     (file . ,(file-editor-session-file-path session))
     (start_line . ,(file-editor-session-start-line session))
     (end_line . ,(file-editor-session-end-line session))
     (decision . ,(symbol-name decision))
+    (feedback . ,(or feedback ""))
+    (line_comments . ,(mapcar (lambda (c)
+                                `((line . ,(car c))
+                                  (comment . ,(cdr c))))
+                              line-comments))
     (timestamp . ,(format-time-string "%Y-%m-%dT%H:%M:%SZ" nil t))))
 
-(defun file-editor--finalize (session decision)
-  "Finalize SESSION with DECISION."
+(defun file-editor--finalize (session decision &optional feedback)
+  "Finalize SESSION with DECISION and optional FEEDBACK."
   (setf (file-editor-session-decision session) decision)
   ;; Clear overlays
   (file-editor--clear-overlays session)
@@ -400,7 +456,8 @@ CONTENT is the added line content."
   (when (fboundp 'activity-panel-end-edit-review)
     (activity-panel-end-edit-review))
   ;; Build result and callback
-  (let ((result (file-editor--build-result session decision)))
+  (let* ((line-comments (file-editor-session-line-comments session))
+         (result (file-editor--build-result session decision feedback line-comments)))
     (with-temp-file file-editor-result-file
       (insert (json-encode result)))
     (when-let ((callback (file-editor-session-callback session)))
@@ -416,16 +473,16 @@ CONTENT is the added line content."
   (interactive)
   (unless file-editor--current-session
     (user-error "No active review session"))
-  (when (y-or-n-p "Approve this edit? ")
-    (file-editor--finalize file-editor--current-session 'approve)))
+  (let ((feedback (read-string "Feedback (optional): ")))
+    (file-editor--finalize file-editor--current-session 'approve feedback)))
 
 (defun file-editor-request-changes ()
   "Request changes for the current edit."
   (interactive)
   (unless file-editor--current-session
     (user-error "No active review session"))
-  (when (y-or-n-p "Reject this edit? ")
-    (file-editor--finalize file-editor--current-session 'request-changes)))
+  (let ((feedback (read-string "Reason for rejection: ")))
+    (file-editor--finalize file-editor--current-session 'request-changes feedback)))
 
 ;;; ============================================================
 ;;; Public API
@@ -453,7 +510,17 @@ Returns the session ID."
   (unless (and end-line (integerp end-line))
     (error "file-editor-open: end-line must be an integer"))
   (let* ((id (file-editor--generate-uuid))
-         (buffer (find-file-noselect file))
+         (existing-buf (get-file-buffer file))
+         (buffer (if existing-buf
+                     (progn
+                       ;; Silently revert if file changed on disk
+                       (with-current-buffer existing-buf
+                         (when (and (buffer-file-name)
+                                    (file-exists-p (buffer-file-name))
+                                    (not (verify-visited-file-modtime existing-buf)))
+                           (revert-buffer t t t)))
+                       existing-buf)
+                   (find-file-noselect file t)))
          (session (make-file-editor-session
                    :id id
                    :file-path file
@@ -467,14 +534,17 @@ Returns the session ID."
                    :removed-overlays nil
                    :added-overlays nil
                    :header-overlay nil
+                   :comment-overlays nil
+                   :line-comments nil
                    :decision nil)))
     ;; Store session
     (puthash id session file-editor--sessions)
     (setq file-editor--current-session session)
     ;; Create diff overlays on the actual file buffer
     (file-editor--create-diff-overlays session)
-    ;; Enable review minor mode
+    ;; Enable review minor mode and auto-revert
     (with-current-buffer buffer
+      (auto-revert-mode 1)
       (file-editor-review-mode 1))
     ;; Integrate with Activity Panel if available
     (if (and (fboundp 'activity-panel-active-p)

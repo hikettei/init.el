@@ -77,6 +77,8 @@
   read-overlays      ; List of (overlay . timer) for read highlights
   panel-window       ; Activity panel window reference
   file-window        ; File display window reference
+  status-message     ; Current status message
+  status-timer       ; Timer for clearing status
   initialized)       ; Whether panel is initialized
 
 (defvar activity--state nil
@@ -124,7 +126,11 @@
          :read-overlays nil
          :panel-window panel-window
          :file-window file-window
+         :status-message nil
+         :status-timer nil
          :initialized t))
+  ;; Show initial status
+  (activity-panel--update-header-line "Watching..." nil)
   (message "Activity Panel initialized"))
 
 (defun activity-panel-cleanup ()
@@ -147,6 +153,62 @@
        (window-live-p (activity-state-file-window activity--state))))
 
 ;;; ============================================================
+;;; Status Display
+;;; ============================================================
+
+(defun activity-panel--get-agent-name ()
+  "Get current AI agent name from session."
+  (if (and (boundp 'ai-session--current) ai-session--current
+           (fboundp 'ai-session-agent))
+      (ai-session-agent ai-session--current)
+    "AI"))
+
+(defun activity-panel--update-header-line (status &optional highlight)
+  "Update header-line with STATUS. If HIGHLIGHT, use highlight color."
+  (when-let ((win (and activity--state (activity-state-file-window activity--state))))
+    (when (window-live-p win)
+      (with-current-buffer (window-buffer win)
+        (setq-local header-line-format
+                    (propertize (format " [%s] %s"
+                                       (activity-panel--get-agent-name)
+                                       status)
+                               'face (if highlight
+                                        '(:background "#50fa7b" :foreground "#282a36" :weight bold)
+                                      '(:background "#6272a4" :foreground "#f8f8f2" :weight bold))))))))
+
+(defun activity-panel-set-status (status &optional clear-after)
+  "Set STATUS message in the activity panel.
+If CLEAR-AFTER is non-nil, reset to idle status after that many seconds."
+  (when activity--state
+    ;; Cancel existing timer
+    (when-let ((timer (activity-state-status-timer activity--state)))
+      (when (timerp timer)
+        (cancel-timer timer)))
+    ;; Update status
+    (setf (activity-state-status-message activity--state) status)
+    ;; Update header-line with highlight
+    (activity-panel--update-header-line status t)
+    ;; Set reset timer if requested
+    (when clear-after
+      (setf (activity-state-status-timer activity--state)
+            (run-at-time clear-after nil #'activity-panel-reset-status)))))
+
+(defun activity-panel-reset-status ()
+  "Reset status to idle (Watching...)."
+  (when activity--state
+    (setf (activity-state-status-message activity--state) nil)
+    (when-let ((timer (activity-state-status-timer activity--state)))
+      (when (timerp timer)
+        (cancel-timer timer))
+      (setf (activity-state-status-timer activity--state) nil))
+    ;; Show idle status
+    (activity-panel--update-header-line "Watching..." nil)))
+
+(defun activity-panel-clear-status ()
+  "Clear the status message (alias for reset)."
+  (activity-panel-reset-status))
+
+;;; ============================================================
 ;;; File Display
 ;;; ============================================================
 
@@ -157,7 +219,17 @@ Optionally scroll to show lines START-LINE to END-LINE."
     (message "Activity Panel not active")
     (cl-return-from activity-panel-show-file nil))
   (let* ((file-window (activity-state-file-window activity--state))
-         (buffer (find-file-noselect file-path)))
+         (existing-buffer (get-file-buffer file-path))
+         (buffer (if existing-buffer
+                     (progn
+                       ;; Silently revert if buffer exists and file changed
+                       (with-current-buffer existing-buffer
+                         (when (and (buffer-file-name)
+                                    (file-exists-p (buffer-file-name))
+                                    (not (verify-visited-file-modtime existing-buffer)))
+                           (revert-buffer t t t)))
+                       existing-buffer)
+                   (find-file-noselect file-path t)))) ; nowarn = t
     ;; Update state
     (setf (activity-state-current-file activity--state) file-path)
     (setf (activity-state-current-buffer activity--state) buffer)

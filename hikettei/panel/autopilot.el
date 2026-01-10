@@ -14,8 +14,10 @@
 
 (require 'multi-panel)
 
-(declare-function activity-panel-initialize "activity-panel")
-(declare-function activity-panel-cleanup "activity-panel")
+;; Ensure mcp directory is in load-path for activity-panel
+(let ((mcp-dir (expand-file-name "mcp" (file-name-directory load-file-name))))
+  (when (file-directory-p mcp-dir)
+    (add-to-list 'load-path mcp-dir)))
 
 ;;; ============================================================
 ;;; Customization
@@ -36,6 +38,9 @@
 (defvar mp--autopilot-status-buffer nil
   "Buffer for Autopilot status display.")
 
+(defvar mp--autopilot-saved-revert-settings nil
+  "Saved auto-revert settings to restore on teardown.")
+
 ;;; ============================================================
 ;;; Status Buffer
 ;;; ============================================================
@@ -45,23 +50,7 @@
   (let ((buf (get-buffer-create "*Autopilot Status*")))
     (with-current-buffer buf
       (let ((inhibit-read-only t))
-        (erase-buffer)
-        (insert (propertize " Autopilot Mode\n"
-                           'face '(:foreground "#bd93f9" :weight bold :height 1.2)))
-        (insert (propertize (make-string 40 ?─) 'face '(:foreground "#44475a")))
-        (insert "\n\n")
-        (insert (propertize " Watching AI Operations\n" 'face '(:foreground "#f8f8f2")))
-        (insert "\n")
-        (insert (propertize " Read Operations:\n" 'face '(:foreground "#8be9fd" :weight bold)))
-        (insert "   (none yet)\n\n")
-        (insert (propertize " Pending Edits:\n" 'face '(:foreground "#ffb86c" :weight bold)))
-        (insert "   (none)\n\n")
-        (insert (propertize (make-string 40 ?─) 'face '(:foreground "#44475a")))
-        (insert "\n")
-        (insert (propertize " Keys:\n" 'face '(:foreground "#6272a4")))
-        (insert "   C-c C-c  Approve edit\n")
-        (insert "   C-c C-k  Reject edit\n")
-        (insert "   M-n/M-p  Navigate diffs\n"))
+        (erase-buffer))
       (special-mode)
       (setq-local mode-line-format nil)
       (setq-local header-line-format nil))
@@ -75,6 +64,15 @@
 (defun mp--setup-autopilot (session)
   "Setup Autopilot mode with Activity Panel.
 SESSION is the current mcp-session."
+  ;; Save current auto-revert settings and enable silent auto-revert
+  (setq mp--autopilot-saved-revert-settings
+        (list (cons 'global-auto-revert-mode global-auto-revert-mode)
+              (cons 'auto-revert-verbose auto-revert-verbose)
+              (cons 'auto-revert-check-vc-info auto-revert-check-vc-info)))
+  (setq auto-revert-verbose nil)
+  (setq auto-revert-check-vc-info nil)
+  (global-auto-revert-mode 1)
+  
   (when (and mp--workarea-window (window-live-p mp--workarea-window))
     (select-window mp--workarea-window)
     ;; Calculate split widths
@@ -101,8 +99,8 @@ SESSION is the current mcp-session."
           (select-window status-window)
           (switch-to-buffer (mp--create-autopilot-status-buffer))
           ;; Initialize Activity Panel with our windows
+          (require 'activity-panel nil t)
           (when (fboundp 'activity-panel-initialize)
-            (require 'activity-panel nil t)
             (activity-panel-initialize status-window file-window))
           ;; Return to file window
           (select-window file-window))))))
@@ -110,6 +108,17 @@ SESSION is the current mcp-session."
 (defun mp--teardown-autopilot (session)
   "Teardown Autopilot mode, cleaning up Activity Panel.
 SESSION is the current mcp-session."
+  ;; Restore auto-revert settings
+  (when mp--autopilot-saved-revert-settings
+    (let ((saved-global (alist-get 'global-auto-revert-mode mp--autopilot-saved-revert-settings))
+          (saved-verbose (alist-get 'auto-revert-verbose mp--autopilot-saved-revert-settings))
+          (saved-vc (alist-get 'auto-revert-check-vc-info mp--autopilot-saved-revert-settings)))
+      (setq auto-revert-verbose saved-verbose)
+      (setq auto-revert-check-vc-info saved-vc)
+      (unless saved-global
+        (global-auto-revert-mode -1)))
+    (setq mp--autopilot-saved-revert-settings nil))
+  
   (when (fboundp 'activity-panel-cleanup)
     (activity-panel-cleanup))
   (setq mp--autopilot-file-window nil))

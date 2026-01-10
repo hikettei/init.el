@@ -393,10 +393,11 @@ If RESUME is non-nil, resume the agent session."
 ;;; AI Chat (vterm + Claude)
 ;;; ============================================================
 
-(defcustom mp-ai-chat-width-fraction 0.16
-  "AI Chat window width as fraction of frame width (default 1/6)."
+(defcustom mp-ai-chat-width-fraction 0.25
+  "AI Chat window width as fraction of frame width (default 1/4)."
   :type 'number
   :group 'multi-panel)
+
 
 (defvar mp--ai-chat-visible nil
   "Whether AI Chat is visible.")

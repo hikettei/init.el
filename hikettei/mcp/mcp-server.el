@@ -132,21 +132,25 @@
   "Format review RESULT for FILE-PATH as response text."
   (let* ((decision (alist-get 'decision result))
          (approved (string= decision "approve"))
-         (summary (or (alist-get 'summary result) ""))
-         (comments (alist-get 'line_comments result)))
+         (feedback (or (alist-get 'feedback result) ""))
+         (comments (alist-get 'line_comments result))
+         (comment-str (if comments
+                         (concat "\n\nLine comments:\n"
+                                 (mapconcat (lambda (c)
+                                              (format "  Line %s: %s"
+                                                      (alist-get 'line c)
+                                                      (alist-get 'comment c)))
+                                            comments "\n"))
+                       "")))
     (if approved
-        (format "Edit approved and applied: %s" file-path)
+        (format "Edit approved and applied: %s%s%s"
+                file-path
+                (if (string-empty-p feedback) "" (format "\nFeedback: %s" feedback))
+                comment-str)
       (format "Edit rejected: %s\nReason: %s%s"
               file-path
-              (if (string-empty-p summary) "(no reason given)" summary)
-              (if comments
-                  (concat "\nLine comments:\n"
-                          (mapconcat (lambda (c)
-                                       (format "  Line %s: %s"
-                                               (alist-get 'line c)
-                                               (alist-get 'comment c)))
-                                     comments "\n"))
-                "")))))
+              (if (string-empty-p feedback) "(no reason given)" feedback)
+              comment-str))))
 
 (defun mcp-server--open-review-and-wait (file-path start end original new-content comment)
   "Open review UI and block until user decides.
@@ -192,6 +196,8 @@ Returns formatted response string."
 
 (declare-function activity-panel-add-read-highlight "activity-panel")
 (declare-function activity-panel-active-p "activity-panel")
+(declare-function activity-panel-set-status "activity-panel")
+(declare-function activity-panel-clear-status "activity-panel")
 
 (defun mcp-server--tool-read-file (args)
   "Handle emacs_read_file tool with Activity Panel integration."
@@ -200,6 +206,12 @@ Returns formatted response string."
                    (alist-get "file_path" args nil nil #'string=)))
             (offset (or (alist-get "offset" args nil nil #'string=) 0))
             (limit (or (alist-get "limit" args nil nil #'string=) 3000)))
+        ;; Show reading status
+        (when (and (fboundp 'activity-panel-active-p)
+                   (activity-panel-active-p)
+                   (fboundp 'activity-panel-set-status))
+          (activity-panel-set-status
+           (format "Reading %s ..." (file-name-nondirectory path)) 3))
         ;; Notify Activity Panel of read operation (if active)
         (when (and (fboundp 'activity-panel-active-p)
                    (fboundp 'activity-panel-add-read-highlight)
@@ -237,8 +249,18 @@ Returns formatted response string."
           (error "File does not exist. Use emacs_write_file"))
         (unless (and (integerp start) (integerp end))
           (error "start_line and end_line must be integers"))
+        ;; Show requesting change status
+        (when (and (fboundp 'activity-panel-active-p)
+                   (activity-panel-active-p)
+                   (fboundp 'activity-panel-set-status))
+          (activity-panel-set-status
+           (format "Requesting change: %s ..." (file-name-nondirectory path))))
         (let ((original (mcp-server--get-original-content path start end)))
-          (mcp-server--open-review-and-wait path start end original content comment)))
+          (prog1
+              (mcp-server--open-review-and-wait path start end original content comment)
+            ;; Clear status after review completes
+            (when (fboundp 'activity-panel-clear-status)
+              (activity-panel-clear-status)))))
     (mcp-path-error (format "Error: %s" (cadr err)))
     (error (format "Error: %s" (error-message-string err)))))
 
