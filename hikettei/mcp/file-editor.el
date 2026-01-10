@@ -170,15 +170,18 @@
       'fundamental-mode)))
 
 (defun file-editor--fontify-string (str file-path)
-  "Return STR with syntax highlighting based on FILE-PATH extension."
+  "Return STR with syntax highlighting based on FILE-PATH extension.
+Returns original STR if fontification fails."
   (if (string-empty-p str)
       str
-    (let ((mode (file-editor--get-mode-for-file file-path)))
-      (with-temp-buffer
-        (insert str)
-        (delay-mode-hooks (funcall mode))
-        (font-lock-ensure)
-        (buffer-string)))))
+    (condition-case nil
+        (let ((mode (file-editor--get-mode-for-file file-path)))
+          (with-temp-buffer
+            (insert str)
+            (delay-mode-hooks (funcall mode))
+            (font-lock-ensure)
+            (buffer-string)))
+      (error str))))
 
 ;;; ============================================================
 ;;; Buffer Rendering

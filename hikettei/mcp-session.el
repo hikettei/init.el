@@ -433,31 +433,43 @@ Uses the mcp-config-flag from agent config, or falls back to --mcp-config."
     (let ((flag (or (plist-get agent-config :mcp-config-flag) "--mcp-config")))
       (format "%s %s" flag (shell-quote-argument config-file)))))
 
+(defun ai-session--build-env-prefix (env-alist)
+  "Build environment variable prefix from ENV-ALIST.
+ENV-ALIST is ((KEY . VALUE) ...) from agent config."
+  (when env-alist
+    (mapconcat (lambda (pair)
+                 (format "%s=%s" (car pair) (cdr pair)))
+               env-alist " ")))
+
 (defun ai-session--build-agent-command (session &optional resume)
   "Build the command string to launch agent for SESSION.
 If RESUME is non-nil, use resume_args with session_id.
-Includes MCP config flag based on the agent type."
+Includes MCP config flag and environment variables."
   (let* ((config (ai-session-agent-config session))
          (executable (plist-get config :executable))
          (args (if resume
                    (plist-get config :resume-args)
                  (plist-get config :args)))
+         (env (plist-get config :env))
          (session-id (ai-session-session-id session))
          (mcp-config-file (ai-session-mcp-config-file session))
          (mcp-args (ai-session--get-mcp-config-flag config mcp-config-file))
-         ;; Shell-quote each arg to handle spaces in values (e.g., system prompts)
-         (quoted-args (mapconcat #'shell-quote-argument args " ")))
+         (env-prefix (ai-session--build-env-prefix env))
+         (quoted-args (mapconcat #'shell-quote-argument args " "))
+         (base-cmd (if resume
+                       (format "%s %s %s %s"
+                               executable
+                               (or mcp-args "")
+                               quoted-args
+                               (or session-id ""))
+                     (format "%s %s %s"
+                             executable
+                             (or mcp-args "")
+                             quoted-args))))
     (string-trim
-     (if resume
-         (format "%s %s %s %s"
-                 executable
-                 (or mcp-args "")
-                 quoted-args
-                 (or session-id ""))
-       (format "%s %s %s"
-               executable
-               (or mcp-args "")
-               quoted-args)))))
+     (if env-prefix
+         (format "%s %s" env-prefix base-cmd)
+       base-cmd))))
 
 (defun ai-session--setup-layout (session &optional resume)
   "Setup layout for SESSION. Delegates to multi-panel if available."

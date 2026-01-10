@@ -1,7 +1,7 @@
 ;;; mcp-server.el --- MCP Server for Emacs -*- lexical-binding: t; -*-
 
 ;; Author: hikettei
-;; Version: 1.0.0
+;; Version: 1.1.0
 ;; Keywords: ai, mcp, tools
 
 ;;; Commentary:
@@ -10,19 +10,13 @@
 ;; Provides file editing tools for AI agents (Claude, Gemini, Codex)
 ;; with GitHub PR-style review workflow.
 ;;
-;; Tools (prefixed with emacs_ to encourage AI agents to prefer them):
+;; Tools:
 ;;   - emacs_read_file: Read file with line numbers
 ;;   - emacs_write_file: Create/overwrite files
-;;   - emacs_edit_file: Partial file edit with diff review UI (user approves/rejects)
+;;   - emacs_edit_file: Partial file edit with diff review UI
 ;;
-;; Dependencies:
-;;   - web-server: HTTP server (installed via 0package-manager.el)
-;;   - file-editor: PR-style review UI
-;;
-;; Usage:
-;;   Called automatically by mcp-session.el when creating sessions.
-;;   Manual: (mcp-server-start "/path/to/project")
-;;           (mcp-server-stop)
+;; The emacs_edit_file tool blocks until user approves/rejects the edit.
+;; The response contains the review result (approved/rejected with comments).
 ;;
 
 ;;; Code:
@@ -32,132 +26,59 @@
 (require 'url-parse)
 (require 'web-server)
 
-;; File editor for review UI (loaded via init.el before this file)
 (declare-function file-editor-open "file-editor")
-
-;; Declarations for web-server
 (declare-function ws-start "web-server")
 (declare-function ws-stop "web-server")
 (declare-function ws-send "web-server")
 (declare-function ws-response-header "web-server")
-(declare-function ws-headers "web-server")
 (declare-function ws-body "web-server")
 (declare-function ws-process "web-server")
-
-;;; ============================================================
-;;; Customization
-;;; ============================================================
-
-(defgroup mcp-server nil
-  "MCP Server for Emacs."
-  :group 'tools
-  :prefix "mcp-server-")
-
 
 ;;; ============================================================
 ;;; Server State
 ;;; ============================================================
 
-(defvar mcp-server--server nil
-  "The web-server instance.")
+(defvar mcp-server--server nil "The web-server instance.")
+(defvar mcp-server--port nil "The port the server is running on.")
+(defvar mcp-server--project-root nil "Project root directory.")
 
-(defvar mcp-server--port nil
-  "The port the server is running on.")
+;;; ============================================================
+;;; Review State (for blocking wait)
+;;; ============================================================
 
-(defvar mcp-server--project-root nil
-  "Project root directory for path restriction.")
+(defvar mcp-server--review-result nil
+  "Result from file-editor review. Set by callback.")
 
+(defvar mcp-server--review-complete nil
+  "Flag indicating review is complete.")
 
 ;;; ============================================================
 ;;; Path Security
 ;;; ============================================================
 
-(define-error 'mcp-server-path-security-error "Path security error")
+(define-error 'mcp-path-error "Path security error")
 
 (defun mcp-server--resolve-path (file-path)
-  "Resolve FILE-PATH relative to project root.
-Relative paths resolve from project root.
-Absolute paths must be within project root.
-Signals `mcp-server-path-security-error' if access denied."
+  "Resolve FILE-PATH within project root. Signals error if outside."
   (unless mcp-server--project-root
-    (signal 'mcp-server-path-security-error '("Server not configured")))
+    (signal 'mcp-path-error '("Server not configured")))
   (let* ((root (file-truename mcp-server--project-root))
-         (path (if (file-name-absolute-p file-path)
-                   file-path
-                 (expand-file-name file-path root)))
+         (path (expand-file-name file-path root))
          (resolved (file-truename path)))
-    ;; Verify path is within project root
     (unless (string-prefix-p root resolved)
-      (signal 'mcp-server-path-security-error
-              (list (format "Access denied: '%s' is outside project root" file-path))))
+      (signal 'mcp-path-error
+              (list (format "Access denied: %s" file-path))))
     resolved))
 
 ;;; ============================================================
-;;; Patch Management
+;;; File Operations
 ;;; ============================================================
 
-(cl-defstruct mcp-server-patch
-  "Staged file edit with optimistic locking."
-  file-path
-  original-hash
-  start-line
-  end-line
-  content
-  is-full-overwrite)
-
-(defvar mcp-server--patches (make-hash-table :test 'equal)
-  "Hash table of registered patches by ID.")
-
-(defvar mcp-server--patch-counter 0
-  "Counter for generating patch IDs.")
-
-(defun mcp-server--hash-file (path)
-  "Calculate SHA256 hash of file at PATH."
-  (if (not (file-exists-p path))
-      "new_file"
-    (condition-case nil
-        (with-temp-buffer
-          (insert-file-contents-literally path)
-          (secure-hash 'sha256 (buffer-string)))
-      (error "new_file"))))
-
-(defun mcp-server--create-patch (file-path)
-  "Create a new patch for FILE-PATH."
-  (let ((hash (mcp-server--hash-file file-path)))
-    (make-mcp-server-patch
-     :file-path file-path
-     :original-hash hash
-     :start-line 0
-     :end-line 0
-     :content ""
-     :is-full-overwrite nil)))
-
-(defun mcp-server--register-patch (patch)
-  "Register PATCH and return its ID."
-  (setq mcp-server--patch-counter (1+ mcp-server--patch-counter))
-  (let ((id (format "p%04d" mcp-server--patch-counter)))
-    (puthash id patch mcp-server--patches)
-    id))
-
-(defun mcp-server--get-patch (patch-id)
-  "Get patch by PATCH-ID."
-  (gethash patch-id mcp-server--patches))
-
-(defun mcp-server--remove-patch (patch-id)
-  "Remove patch by PATCH-ID."
-  (remhash patch-id mcp-server--patches))
-
-(defun mcp-server--clear-patches ()
-  "Clear all patches."
-  (clrhash mcp-server--patches))
-
-(defun mcp-server--patch-read-view (patch &optional offset limit)
-  "Read file content for PATCH with line numbers.
-OFFSET is start line (0-indexed), LIMIT is max lines."
+(defun mcp-server--read-file (path &optional offset limit)
+  "Read file at PATH with line numbers. OFFSET and LIMIT for pagination."
   (let ((offset (or offset 0))
-        (limit (or limit 3000))
-        (path (mcp-server-patch-file-path patch)))
-    (condition-case err
+        (limit (or limit 3000)))
+    (condition-case nil
         (let* ((content (with-temp-buffer
                           (insert-file-contents path)
                           (buffer-string)))
@@ -169,201 +90,155 @@ OFFSET is start line (0-indexed), LIMIT is max lines."
           (cl-loop for i from offset below end
                    do (push (format "%4d | %s" (1+ i) (nth i lines)) output))
           (when (< end total)
-            (push (format "... (%d more lines, use offset=%d)" (- total end) end) output))
+            (push (format "... (%d more lines)" (- total end)) output))
           (string-join (nreverse output) "\n"))
-      (file-missing (format "Error: File not found: %s" path))
-      (error (format "Error reading file: %s" (error-message-string err))))))
+      (file-missing (format "Error: File not found: %s" path)))))
 
-(defun mcp-server--patch-stage-overwrite (patch content)
-  "Stage full file overwrite on PATCH with CONTENT."
-  (setf (mcp-server-patch-content patch) content)
-  (setf (mcp-server-patch-is-full-overwrite patch) t))
+(defun mcp-server--write-file (path content)
+  "Write CONTENT to file at PATH."
+  (make-directory (file-name-directory path) t)
+  (with-temp-file path (insert content))
+  (format "Wrote: %s" path))
 
-(defun mcp-server--patch-stage-edit (patch start end content)
-  "Stage partial edit on PATCH from START to END with CONTENT.
-Returns (preview . original-section)."
-  (setf (mcp-server-patch-start-line patch) start)
-  (setf (mcp-server-patch-end-line patch) end)
-  (setf (mcp-server-patch-content patch) content)
-  (setf (mcp-server-patch-is-full-overwrite patch) nil)
-  (let ((path (mcp-server-patch-file-path patch)))
-    (condition-case err
-        (let* ((file-content (with-temp-buffer
-                               (insert-file-contents path)
-                               (buffer-string)))
-               (lines (split-string file-content "\n"))
-               ;; 1-indexed to 0-indexed
-               (start-idx (max 0 (1- start)))
-               (end-idx (min (length lines) end))
-               (original (cl-subseq lines start-idx end-idx))
-               (new-lines (split-string content "\n"))
-               ;; Context lines
-               (ctx 3)
-               (ctx-start (max 0 (- start 1 ctx)))
-               (ctx-end (min (length lines) (+ end ctx)))
-               (preview (list (format "File: %s (Edit Preview)" path)
-                              (make-string 50 ?-))))
-          ;; Context before
-          (cl-loop for i from ctx-start below start-idx
-                   do (push (format "%4d   | %s" (1+ i) (nth i lines)) preview))
-          ;; Removed lines
-          (cl-loop for i from 0 below (length original)
-                   do (push (format "%4d - | %s" (+ start i) (nth i original)) preview))
-          ;; Added lines
-          (dolist (line new-lines)
-            (push (format "     + | %s" line) preview))
-          ;; Context after
-          (cl-loop for i from end-idx below ctx-end
-                   do (push (format "%4d   | %s" (1+ i) (nth i lines)) preview))
-          (cons (string-join (nreverse preview) "\n")
-                (string-join original "\n")))
-      (error (cons (format "Error: %s" (error-message-string err)) "")))))
+(defun mcp-server--apply-edit (path start-line end-line new-content)
+  "Apply edit to PATH replacing lines START-LINE to END-LINE with NEW-CONTENT."
+  (let* ((file-content (with-temp-buffer
+                         (insert-file-contents path)
+                         (buffer-string)))
+         (lines (split-string file-content "\n" t))
+         (start-idx (max 0 (1- start-line)))
+         (new-lines (split-string new-content "\n"))
+         (result (append (cl-subseq lines 0 start-idx)
+                         new-lines
+                         (cl-subseq lines end-line))))
+    (with-temp-file path
+      (insert (string-join result "\n")))))
 
-(defun mcp-server--patch-apply (patch)
-  "Apply staged edit from PATCH to file."
-  (let* ((path (mcp-server-patch-file-path patch))
-         (current-hash (mcp-server--hash-file path))
-         (orig-hash (mcp-server-patch-original-hash patch)))
-    ;; Verify file hasn't changed (optimistic lock)
-    (when (and (not (string= current-hash orig-hash))
-               (not (string= orig-hash "new_file")))
-      (error "Conflict: file changed since edit was staged"))
-    (if (mcp-server-patch-is-full-overwrite patch)
-        ;; Full overwrite
-        (progn
-          (make-directory (file-name-directory path) t)
-          (with-temp-file path
-            (insert (mcp-server-patch-content patch))))
-      ;; Partial edit
-      (let* ((file-content (with-temp-buffer
-                             (insert-file-contents path)
-                             (buffer-string)))
-             (lines (split-string file-content "\n" t))
-             (start-idx (max 0 (1- (mcp-server-patch-start-line patch))))
-             (end-idx (mcp-server-patch-end-line patch))
-             (new-lines (split-string (mcp-server-patch-content patch) "\n"))
-             (result (append (cl-subseq lines 0 start-idx)
-                             new-lines
-                             (cl-subseq lines end-idx))))
-        (with-temp-file path
-          (insert (string-join result "\n")))))))
+(defun mcp-server--get-original-content (path start-line end-line)
+  "Get original content from PATH between START-LINE and END-LINE."
+  (let* ((content (with-temp-buffer
+                    (insert-file-contents path)
+                    (buffer-string)))
+         (lines (split-string content "\n"))
+         (start-idx (max 0 (1- start-line)))
+         (end-idx (min (length lines) end-line)))
+    (string-join (cl-subseq lines start-idx end-idx) "\n")))
 
 ;;; ============================================================
-;;; Review UI Integration
+;;; Review UI (Blocking)
 ;;; ============================================================
 
-(defun mcp-server--open-review-ui-with-callback (file-path start end original new-content comment patch)
-  "Open Emacs review UI with callback to apply PATCH on approval.
-FILE-PATH is the file being edited.
-START and END are line numbers.
-ORIGINAL is the original content.
-NEW-CONTENT is the proposed content.
-COMMENT is optional explanation for reviewer.
-PATCH is the patch object to apply on approval."
-  (when (fboundp 'file-editor-open)
-    (file-editor-open
-     :file file-path
-     :start-line start
-     :end-line end
-     :original original
-     :new new-content
-     :ai-comment comment
-     :callback (lambda (result)
-                 (let ((decision (alist-get 'decision result)))
-                   (if (string= decision "approve")
-                       (progn
-                         (mcp-server--patch-apply patch)
-                         (mcp-server--remove-patch
-                          (cl-loop for id being the hash-keys of mcp-server--patches
-                                   when (eq (gethash id mcp-server--patches) patch)
-                                   return id))
-                         (message "Edit approved and applied: %s" file-path))
-                     (message "Edit rejected: %s" file-path)))))))
+(defun mcp-server--format-review-result (result file-path)
+  "Format review RESULT for FILE-PATH as response text."
+  (let* ((decision (alist-get 'decision result))
+         (approved (string= decision "approve"))
+         (summary (or (alist-get 'summary result) ""))
+         (comments (alist-get 'line_comments result)))
+    (if approved
+        (format "Edit approved and applied: %s" file-path)
+      (format "Edit rejected: %s\nReason: %s%s"
+              file-path
+              (if (string-empty-p summary) "(no reason given)" summary)
+              (if comments
+                  (concat "\nLine comments:\n"
+                          (mapconcat (lambda (c)
+                                       (format "  Line %s: %s"
+                                               (alist-get 'line c)
+                                               (alist-get 'comment c)))
+                                     comments "\n"))
+                "")))))
+
+(defun mcp-server--open-review-and-wait (file-path start end original new-content comment)
+  "Open review UI and block until user decides.
+Returns formatted response string."
+  (setq mcp-server--review-result nil
+        mcp-server--review-complete nil)
+  (file-editor-open
+   :file file-path
+   :start-line start
+   :end-line end
+   :original original
+   :new new-content
+   :ai-comment comment
+   :callback (lambda (result)
+               (setq mcp-server--review-result result
+                     mcp-server--review-complete t)
+               (exit-recursive-edit)))
+  ;; Block with recursive-edit (allows Emacs event loop to run)
+  (condition-case nil
+      (recursive-edit)
+    (quit
+     ;; User aborted with C-g, treat as rejection
+     (setq mcp-server--review-result
+           `((decision . "request-changes")
+             (summary . "Review aborted by user")))))
+  ;; Process result
+  (let* ((result mcp-server--review-result)
+         (decision (alist-get 'decision result))
+         (approved (string= decision "approve")))
+    (when approved
+      (condition-case err
+          (mcp-server--apply-edit file-path start end new-content)
+        (error
+         (setq mcp-server--review-result
+               `((decision . "error")
+                 (summary . ,(format "Apply failed: %s"
+                                     (error-message-string err))))))))
+    (mcp-server--format-review-result mcp-server--review-result file-path)))
 
 ;;; ============================================================
-;;; MCP Tools Implementation
+;;; MCP Tools
 ;;; ============================================================
 
 (defun mcp-server--tool-read-file (args)
-  "Handle read_file tool with ARGS."
-  (let ((file-path (alist-get "file_path" args nil nil #'string=))
-        (offset (or (alist-get "offset" args nil nil #'string=) 0))
-        (limit (or (alist-get "limit" args nil nil #'string=) 3000)))
-    (condition-case err
-        (let* ((resolved (mcp-server--resolve-path file-path))
-               (patch (mcp-server--create-patch resolved)))
-          (mcp-server--patch-read-view patch offset limit))
-      (mcp-server-path-security-error
-       (format "Error: Access denied: %s" file-path))
-      (error
-       (format "Error: %s" (error-message-string err))))))
+  "Handle emacs_read_file tool."
+  (condition-case err
+      (let ((path (mcp-server--resolve-path
+                   (alist-get "file_path" args nil nil #'string=)))
+            (offset (or (alist-get "offset" args nil nil #'string=) 0))
+            (limit (or (alist-get "limit" args nil nil #'string=) 3000)))
+        (mcp-server--read-file path offset limit))
+    (mcp-path-error (format "Error: %s" (cadr err)))
+    (error (format "Error: %s" (error-message-string err)))))
 
 (defun mcp-server--tool-write-file (args)
-  "Handle write_file tool with ARGS."
-  (let ((file-path (alist-get "file_path" args nil nil #'string=))
-        (content (alist-get "content" args nil nil #'string=))
-        (supersede (alist-get "supersede" args nil nil #'string=)))
-    (condition-case err
-        (let* ((resolved (mcp-server--resolve-path file-path))
-               (patch (mcp-server--create-patch resolved)))
-          (if (and (not supersede)
-                   (not (string= (mcp-server-patch-original-hash patch) "new_file")))
-              "Error: File exists. Use supersede=true or request_edit."
-            (mcp-server--patch-stage-overwrite patch content)
-            (mcp-server--patch-apply patch)
-            (format "Wrote: %s" file-path)))
-      (mcp-server-path-security-error
-       (format "Error: Access denied: %s" file-path))
-      (error
-       (format "Error: %s" (error-message-string err))))))
+  "Handle emacs_write_file tool."
+  (condition-case err
+      (let* ((path (mcp-server--resolve-path
+                    (alist-get "file_path" args nil nil #'string=)))
+             (content (alist-get "content" args nil nil #'string=))
+             (supersede (alist-get "supersede" args nil nil #'string=))
+             (exists (file-exists-p path)))
+        (if (and exists (not supersede))
+            "Error: File exists. Use supersede=true to overwrite."
+          (mcp-server--write-file path content)))
+    (mcp-path-error (format "Error: %s" (cadr err)))
+    (error (format "Error: %s" (error-message-string err)))))
 
-(defun mcp-server--tool-request-edit (args)
-  "Handle request_edit tool with ARGS."
-  (let* ((file-path (alist-get "file_path" args nil nil #'string=))
-         (start-line (alist-get "start_line" args nil nil #'string=))
-         (end-line (alist-get "end_line" args nil nil #'string=))
-         (content (alist-get "content" args nil nil #'string=))
-         (comment (or (alist-get "comment" args nil nil #'string=) "")))
-    ;; Validate required arguments
-    (unless (and file-path start-line end-line content)
-      (error "Missing required arguments: file_path=%s start_line=%s end_line=%s content=%s"
-             file-path start-line end-line (if content "provided" "nil")))
-    (unless (and (integerp start-line) (integerp end-line))
-      (error "start_line and end_line must be integers: start_line=%S end_line=%S"
-             start-line end-line))
-    (condition-case err
-        (let* ((resolved (mcp-server--resolve-path file-path))
-               (patch (mcp-server--create-patch resolved)))
-          (if (string= (mcp-server-patch-original-hash patch) "new_file")
-              "Error: File does not exist. Use emacs_write_file."
-            (let* ((stage-result (mcp-server--patch-stage-edit patch start-line end-line content))
-                   (preview (car stage-result))
-                   (original (cdr stage-result))
-                   (patch-id (mcp-server--register-patch patch)))
-              ;; Open review UI with callback to apply patch
-              (mcp-server--open-review-ui-with-callback
-               resolved start-line end-line original content comment patch)
-              ;; Return immediately - review is async
-              (format "Edit staged for review (patch %s). User will approve/reject in Emacs.\n\n%s"
-                      patch-id preview))))
-      (mcp-server-path-security-error
-       (format "Error: Access denied: %s" file-path))
-      (error
-       (format "Error: %s" (error-message-string err))))))
+(defun mcp-server--tool-edit-file (args)
+  "Handle emacs_edit_file tool. Blocks until user review completes."
+  (condition-case err
+      (let* ((path (mcp-server--resolve-path
+                    (alist-get "file_path" args nil nil #'string=)))
+             (start (alist-get "start_line" args nil nil #'string=))
+             (end (alist-get "end_line" args nil nil #'string=))
+             (content (alist-get "content" args nil nil #'string=))
+             (comment (or (alist-get "comment" args nil nil #'string=) "")))
+        (unless (file-exists-p path)
+          (error "File does not exist. Use emacs_write_file"))
+        (unless (and (integerp start) (integerp end))
+          (error "start_line and end_line must be integers"))
+        (let ((original (mcp-server--get-original-content path start end)))
+          (mcp-server--open-review-and-wait path start end original content comment)))
+    (mcp-path-error (format "Error: %s" (cadr err)))
+    (error (format "Error: %s" (error-message-string err)))))
 
 (defun mcp-server--tool-eval (args)
-  "Handle eval tool with ARGS.
-Evaluates Emacs Lisp code and returns the result."
-  (let ((code (alist-get "code" args nil nil #'string=)))
-    (unless code
-      (error "Missing required argument: code"))
-    (condition-case err
-        (let* ((form (read code))
-               (result (eval form t)))
-          (format "%S" result))
-      (error
-       (format "Error: %s" (error-message-string err))))))
-
+  "Handle emacs_eval tool."
+  (condition-case err
+      (let ((code (alist-get "code" args nil nil #'string=)))
+        (format "%S" (eval (read code) t)))
+    (error (format "Error: %s" (error-message-string err)))))
 
 ;;; ============================================================
 ;;; MCP Protocol
@@ -412,42 +287,33 @@ Evaluates Emacs Lisp code and returns the result."
      (inputSchema . ((type . "object")
                      (properties . ((code . ((type . "string")
                                              (description . "Emacs Lisp code to evaluate")))))
-                     (required . ["code"])))))
-  "List of MCP tools - these are REQUIRED for all file operations.")
+                     (required . ["code"]))))))
 
 (defun mcp-server--handle-initialize (_params)
-  "Handle the initialize method."
+  "Handle initialize method."
   `((protocolVersion . "2024-11-05")
     (capabilities . ((tools . ((listChanged . :json-false)))
                      (logging . ,(make-hash-table :test 'equal))))
-    (serverInfo . ((name . "emacs-mcp-server")
-                   (version . "1.0.0")))))
-
-(defun mcp-server--handle-tools-list (_params)
-  "Handle the tools/list method."
-  `((tools . ,(vconcat mcp-server--tools))))
+    (serverInfo . ((name . "emacs-mcp-server") (version . "1.1.0")))))
 
 (defun mcp-server--handle-tools-call (params)
-  "Handle the tools/call method with PARAMS."
-  (let* ((tool-name (alist-get "name" params nil nil #'string=))
-         (tool-args (alist-get "arguments" params nil nil #'string=))
-         (result (pcase tool-name
-                   ("emacs_read_file" (mcp-server--tool-read-file tool-args))
-                   ("emacs_write_file" (mcp-server--tool-write-file tool-args))
-                   ("emacs_edit_file" (mcp-server--tool-request-edit tool-args))
-                   ("emacs_eval" (mcp-server--tool-eval tool-args))
-                   (_ (format "Error: Unknown tool: %s" tool-name)))))
-    `((content . [((type . "text")
-                   (text . ,result))]))))
+  "Handle tools/call method."
+  (let* ((name (alist-get "name" params nil nil #'string=))
+         (args (alist-get "arguments" params nil nil #'string=))
+         (result (pcase name
+                   ("emacs_read_file" (mcp-server--tool-read-file args))
+                   ("emacs_write_file" (mcp-server--tool-write-file args))
+                   ("emacs_edit_file" (mcp-server--tool-edit-file args))
+                   ("emacs_eval" (mcp-server--tool-eval args))
+                   (_ (format "Error: Unknown tool: %s" name)))))
+    `((content . [((type . "text") (text . ,result))]))))
 
 (defun mcp-server--dispatch (method params)
-  "Dispatch MCP method calls.
-METHOD is the JSON-RPC method name.
-PARAMS is the parameters alist."
+  "Dispatch MCP method."
   (pcase method
     ("initialize" (mcp-server--handle-initialize params))
-    ("notifications/initialized" nil)  ; MCP notification, no response needed
-    ("tools/list" (mcp-server--handle-tools-list params))
+    ("notifications/initialized" nil)
+    ("tools/list" `((tools . ,(vconcat mcp-server--tools))))
     ("tools/call" (mcp-server--handle-tools-call params))
     (_ `((content . [((type . "text")
                       (text . ,(format "Error: Unknown method: %s" method)))])))))
@@ -457,70 +323,57 @@ PARAMS is the parameters alist."
 ;;; ============================================================
 
 (defun mcp-server--handle-reload (request)
-  "Handle GET /reload - bootstrap endpoint to reload this file.
-No JSON parsing required, just hit with: curl http://127.0.0.1:PORT/reload"
+  "Handle GET /reload."
   (let ((process (ws-process request)))
     (condition-case err
         (progn
           (load-file (expand-file-name "hikettei/mcp/mcp-server.el" user-emacs-directory))
           (ws-response-header process 200 '("Content-Type" . "text/plain"))
-          (ws-send process "OK: mcp-server.el reloaded successfully")
-          (throw 'close-connection nil))
+          (ws-send process "OK: reloaded"))
       (error
        (ws-response-header process 500 '("Content-Type" . "text/plain"))
-       (ws-send process (format "Error: %s" (error-message-string err)))
-       (throw 'close-connection nil)))))
+       (ws-send process (format "Error: %s" (error-message-string err)))))
+    (throw 'close-connection nil)))
 
 (defun mcp-server--handle-post (request)
-  "Handle POST request to /mcp endpoint."
-  (let ((request-id nil))
+  "Handle POST /mcp."
+  (let ((process (ws-process request))
+        (id nil))
     (condition-case err
         (let* ((body (ws-body request))
-               (json-object (json-parse-string body :object-type 'alist))
-               (method (alist-get "method" json-object nil nil #'string=))
-               (params (alist-get "params" json-object nil nil #'string=))
-               (id (alist-get "id" json-object nil nil #'string=)))
-          (setq request-id id)
+               (json (json-parse-string body :object-type 'alist))
+               (method (alist-get "method" json nil nil #'string=))
+               (params (alist-get "params" json nil nil #'string=)))
+          (setq id (alist-get "id" json nil nil #'string=))
           (if (null id)
-              (mcp-server--send-empty-response request)
+              ;; Notification - no response needed
+              (progn
+                (ws-response-header process 200
+                                    '("Content-Type" . "text/plain")
+                                    '("Content-Length" . "0"))
+                (throw 'close-connection nil))
+            ;; Request - dispatch and respond
             (let ((result (mcp-server--dispatch method params)))
-              (if (null result)
-                  (mcp-server--send-empty-response request)
-                (mcp-server--send-json-response
-                 request 200
-                 `((jsonrpc . "2.0")
-                   (id . ,id)
-                   (result . ,result)))))))
-      (json-parse-error
-       (mcp-server--send-json-response
-        request 200
-        `((jsonrpc . "2.0")
-          (id . ,(or request-id "error"))
-          (result . ((content . [((type . "text") (text . "Error: Invalid JSON"))]))))))
+              (ws-response-header process 200
+                                  '("Content-Type" . "application/json")
+                                  '("Access-Control-Allow-Origin" . "*"))
+              (ws-send process
+                       (json-encode
+                        (if result
+                            `((jsonrpc . "2.0") (id . ,id) (result . ,result))
+                          `((jsonrpc . "2.0") (id . ,id) (result . nil)))))
+              (throw 'close-connection nil))))
       (error
-       (mcp-server--send-json-response
-        request 200
-        `((jsonrpc . "2.0")
-          (id . ,(or request-id "error"))
-          (result . ((content . [((type . "text") (text . ,(format "Error: %s" (error-message-string err))))])))))))))
-
-(defun mcp-server--send-json-response (request status body)
-  "Send JSON response to REQUEST with STATUS and BODY."
-  (let ((process (ws-process request)))
-    (ws-response-header process status
-                        '("Content-Type" . "application/json")
-                        '("Access-Control-Allow-Origin" . "*"))
-    (ws-send process (json-encode body))
-    (throw 'close-connection nil)))
-
-(defun mcp-server--send-empty-response (request)
-  "Send empty HTTP 200 response for notifications."
-  (let ((process (ws-process request)))
-    (ws-response-header process 200
-                        '("Content-Type" . "text/plain")
-                        '("Content-Length" . "0"))
-    (throw 'close-connection nil)))
-
+       (ws-response-header process 200
+                           '("Content-Type" . "application/json"))
+       (ws-send process
+                (json-encode
+                 `((jsonrpc . "2.0")
+                   (id . ,(or id "error"))
+                   (result . ((content . [((type . "text")
+                                           (text . ,(format "Error: %s"
+                                                            (error-message-string err))))]))))))
+       (throw 'close-connection nil)))))
 
 ;;; ============================================================
 ;;; Public API
@@ -528,58 +381,42 @@ No JSON parsing required, just hit with: curl http://127.0.0.1:PORT/reload"
 
 ;;;###autoload
 (defun mcp-server-start (project-root &optional port)
-  "Start the MCP server for PROJECT-ROOT.
-Optional PORT specifies the port (0 for auto-select).
-Returns (server . port) cons cell."
+  "Start MCP server for PROJECT-ROOT on PORT (0 for auto)."
   (interactive "DProject root: ")
   (unless (featurep 'web-server)
-    (error "web-server package is not available"))
-  (when mcp-server--server
-    (mcp-server-stop))
-  ;; Setup configuration
+    (error "web-server package not available"))
+  (when mcp-server--server (mcp-server-stop))
   (setq mcp-server--project-root (file-truename (expand-file-name project-root)))
-  ;; Reset patch state
-  (mcp-server--clear-patches)
-  (setq mcp-server--patch-counter 0)
-  ;; Start server
-  (let* ((selected-port (or port 0))
-         (server (ws-start
+  (let* ((server (ws-start
                   `(((:GET . "^/reload$") . ,#'mcp-server--handle-reload)
                     ((:POST . "^/mcp.*") . ,#'mcp-server--handle-post))
-                  selected-port
-                  nil
-                  :host "127.0.0.1")))
-    (setq mcp-server--server server)
-    (let* ((process (ws-process server))
-           (actual-port (process-contact process :service)))
-      (setq mcp-server--port actual-port)
-      (message "MCP Server started on port %d for %s"
-               actual-port mcp-server--project-root)
-      (cons server actual-port))))
+                  (or port 0) nil :host "127.0.0.1")))
+    (setq mcp-server--server server
+          mcp-server--port (process-contact (ws-process server) :service))
+    (message "MCP Server started on port %d" mcp-server--port)
+    (cons server mcp-server--port)))
 
 ;;;###autoload
 (defun mcp-server-stop ()
-  "Stop the MCP server."
+  "Stop MCP server."
   (interactive)
   (when mcp-server--server
     (ws-stop mcp-server--server)
-    (setq mcp-server--server nil)
-    (setq mcp-server--port nil)
+    (setq mcp-server--server nil mcp-server--port nil)
     (message "MCP Server stopped")))
 
 ;;;###autoload
 (defun mcp-server-status ()
   "Show MCP server status."
   (interactive)
-  (if mcp-server--server
-      (message "MCP Server running on port %d for %s"
-               mcp-server--port mcp-server--project-root)
-    (message "MCP Server not running")))
+  (message (if mcp-server--server
+               (format "MCP Server on port %d for %s"
+                       mcp-server--port mcp-server--project-root)
+             "MCP Server not running")))
 
 ;;;###autoload
 (defun mcp-server-get-config ()
-  "Get MCP server configuration for Claude.
-Returns alist suitable for claude.json mcpServers configuration."
+  "Get MCP server URL configuration."
   (when (and mcp-server--server mcp-server--port)
     `((url . ,(format "http://127.0.0.1:%d/mcp" mcp-server--port)))))
 
