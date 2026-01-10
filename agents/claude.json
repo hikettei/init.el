@@ -7,7 +7,7 @@
   },
   "command": {
     "executable": "claude",
-    "args": [],
+    "args": ["--system-prompt", "IMPORTANT: When editing files, ALWAYS prefer using the emacs_* MCP tools (emacs_read_file, emacs_write_file, emacs_edit_file) instead of the default Read/Write/Edit tools. The emacs tools provide a better user experience with syntax highlighting and PR-style review UI. For partial edits, use emacs_edit_file with a helpful comment explaining the change."],
     "resume_args": ["--resume"],
     "mcp_config_flag": "--mcp-config"
   },

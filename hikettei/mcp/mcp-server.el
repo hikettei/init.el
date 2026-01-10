@@ -1,26 +1,31 @@
-;;; mcp-server.el --- MCP Server for Emacs File Editor -*- lexical-binding: t; -*-
+;;; mcp-server.el --- MCP Server for Emacs -*- lexical-binding: t; -*-
 
 ;; Author: hikettei
 ;; Version: 1.0.0
-;; Package-Requires: ((emacs "27.1") (web-server "0.1.2"))
 ;; Keywords: ai, mcp, tools
 
 ;;; Commentary:
 ;;
-;; MCP (Model Context Protocol) server implemented in Emacs Lisp.
-;; Provides file editing tools for AI agents with review workflow.
+;; MCP (Model Context Protocol) HTTP server implemented in Emacs Lisp.
+;; Provides file editing tools for AI agents (Claude, Gemini, Codex)
+;; with GitHub PR-style review workflow.
 ;;
-;; Tools:
-;;   - read_file: Read file with line numbers
-;;   - write_file: Create/overwrite files
-;;   - request_edit: Request partial file edit with review UI
-;;   - approve_edit: Apply staged edit
-;;   - reject_edit: Discard staged edit
-;;   - delete_file: Delete file or directory
+;; Tools (prefixed with emacs_ to encourage AI agents to prefer them):
+;;   - emacs_read_file: Read file with line numbers
+;;   - emacs_write_file: Create/overwrite files
+;;   - emacs_edit_file: Partial file edit with diff review UI
+;;   - emacs_approve_edit: Apply staged edit
+;;   - emacs_reject_edit: Discard staged edit
+;;   - emacs_delete_file: Delete file or directory
+;;
+;; Dependencies:
+;;   - web-server: HTTP server (installed via 0package-manager.el)
+;;   - file-editor: PR-style review UI
 ;;
 ;; Usage:
-;;   (mcp-server-start "/path/to/project")
-;;   (mcp-server-stop)
+;;   Called automatically by mcp-session.el when creating sessions.
+;;   Manual: (mcp-server-start "/path/to/project")
+;;           (mcp-server-stop)
 ;;
 
 ;;; Code:
@@ -28,8 +33,6 @@
 (require 'cl-lib)
 (require 'json)
 (require 'url-parse)
-
-;; web-server is installed via 0package-manager.el
 (require 'web-server)
 
 ;; File editor for review UI
@@ -434,8 +437,8 @@ Returns result alist or nil."
 ;;; ============================================================
 
 (defconst mcp-server--tools
-  '(((name . "read_file")
-     (description . "Read file with line numbers. Use offset for pagination.")
+  '(((name . "emacs_read_file")
+     (description . "PREFERRED: Read file content with line numbers displayed in Emacs. Use this instead of the default Read tool. Returns content with syntax highlighting context and precise line numbers for accurate editing. Supports pagination for large files.")
      (inputSchema . ((type . "object")
                      (properties . ((file_path . ((type . "string")
                                                   (description . "File path (relative to project root)")))
@@ -443,57 +446,56 @@ Returns result alist or nil."
                                                (description . "Start line (0-indexed)")
                                                (default . 0)))
                                     (limit . ((type . "integer")
-                                              (description . "Max lines")
+                                              (description . "Max lines to read")
                                               (default . 3000)))))
                      (required . ["file_path"]))))
-    ((name . "write_file")
-     (description . "Create new file. Use supersede=true to overwrite existing.")
+    ((name . "emacs_write_file")
+     (description . "PREFERRED: Create or overwrite file through Emacs. Use this instead of the default Write tool. The file is opened in Emacs buffer for the user to see. Use supersede=true to overwrite existing files.")
      (inputSchema . ((type . "object")
                      (properties . ((file_path . ((type . "string")
-                                                  (description . "File path")))
+                                                  (description . "File path to create/write")))
                                     (content . ((type . "string")
-                                                (description . "File content")))
+                                                (description . "Complete file content")))
                                     (supersede . ((type . "boolean")
-                                                  (description . "Overwrite if exists")
+                                                  (description . "Set true to overwrite existing file")
                                                   (default . :json-false)))))
                      (required . ["file_path" "content"]))))
-    ((name . "request_edit")
-     (description . "Request partial file edit. Opens review UI in Emacs for approval.")
+    ((name . "emacs_edit_file")
+     (description . "PREFERRED: Request partial file edit with GitHub PR-style review UI. Use this instead of the default Edit tool. Opens a diff view in Emacs showing removed/added lines with syntax highlighting. The user can approve, reject, or add line comments. Always include a helpful comment explaining the change.")
      (inputSchema . ((type . "object")
                      (properties . ((file_path . ((type . "string")
-                                                  (description . "File path")))
+                                                  (description . "File path to edit")))
                                     (start_line . ((type . "integer")
-                                                   (description . "Start line (1-indexed, inclusive)")))
+                                                   (description . "Start line number (1-indexed, inclusive)")))
                                     (end_line . ((type . "integer")
-                                                 (description . "End line (1-indexed, inclusive)")))
+                                                 (description . "End line number (1-indexed, inclusive)")))
                                     (content . ((type . "string")
-                                                (description . "New content")))
+                                                (description . "New content to replace the specified line range")))
                                     (comment . ((type . "string")
-                                                (description . "Explanation for reviewer")
-                                                (default . "")))))
-                     (required . ["file_path" "start_line" "end_line" "content"]))))
-    ((name . "approve_edit")
-     (description . "Apply staged edit by patch_id.")
+                                                (description . "Explanation of the change for the reviewer (required for good UX)")))))))
+                     (required . ["file_path" "start_line" "end_line" "content" "comment"])))
+    ((name . "emacs_approve_edit")
+     (description . "Apply a staged edit by its patch_id. Use this after emacs_edit_file if the edit was not auto-approved.")
      (inputSchema . ((type . "object")
                      (properties . ((patch_id . ((type . "string")
-                                                 (description . "Patch ID from request_edit")))))
+                                                 (description . "Patch ID returned from emacs_edit_file")))))
                      (required . ["patch_id"]))))
-    ((name . "reject_edit")
-     (description . "Discard staged edit.")
+    ((name . "emacs_reject_edit")
+     (description . "Discard a staged edit. Use this if you want to abandon a pending edit.")
      (inputSchema . ((type . "object")
                      (properties . ((patch_id . ((type . "string")
                                                  (description . "Patch ID to reject")))))
                      (required . ["patch_id"]))))
-    ((name . "delete_file")
-     (description . "Delete file or directory.")
+    ((name . "emacs_delete_file")
+     (description . "Delete file or directory through Emacs. Use recursive=true for directories.")
      (inputSchema . ((type . "object")
                      (properties . ((file_path . ((type . "string")
                                                   (description . "Path to delete")))
                                     (recursive . ((type . "boolean")
-                                                  (description . "Recursive delete")
+                                                  (description . "Set true for recursive directory deletion")
                                                   (default . :json-false)))))
                      (required . ["file_path"])))))
-  "List of MCP tools.")
+  "List of MCP tools with descriptions that encourage AI agents to prefer them.")
 
 (defun mcp-server--handle-initialize (_params)
   "Handle the initialize method."
@@ -512,12 +514,12 @@ Returns result alist or nil."
   (let* ((tool-name (alist-get 'name params))
          (tool-args (alist-get 'arguments params))
          (result (pcase tool-name
-                   ("read_file" (mcp-server--tool-read-file tool-args))
-                   ("write_file" (mcp-server--tool-write-file tool-args))
-                   ("request_edit" (mcp-server--tool-request-edit tool-args))
-                   ("approve_edit" (mcp-server--tool-approve-edit tool-args))
-                   ("reject_edit" (mcp-server--tool-reject-edit tool-args))
-                   ("delete_file" (mcp-server--tool-delete-file tool-args))
+                   ("emacs_read_file" (mcp-server--tool-read-file tool-args))
+                   ("emacs_write_file" (mcp-server--tool-write-file tool-args))
+                   ("emacs_edit_file" (mcp-server--tool-request-edit tool-args))
+                   ("emacs_approve_edit" (mcp-server--tool-approve-edit tool-args))
+                   ("emacs_reject_edit" (mcp-server--tool-reject-edit tool-args))
+                   ("emacs_delete_file" (mcp-server--tool-delete-file tool-args))
                    (_ (format "Error: Unknown tool: %s" tool-name)))))
     `((content . [((type . "text")
                    (text . ,result))]))))
