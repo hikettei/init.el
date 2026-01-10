@@ -925,6 +925,10 @@ Each entry is (workspace . session-data).")
   (interactive)
   ;; Stop any existing animation
   (sw--stop-nyan-animation)
+  ;; Hide NeoTree if visible
+  (when (and (fboundp 'neo-global--window-exists-p)
+             (neo-global--window-exists-p))
+    (neotree-hide))
   ;; Load agents from config files
   (sw--load-agents)
   ;; Reset state with defaults

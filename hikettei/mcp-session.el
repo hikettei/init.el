@@ -330,6 +330,39 @@
     (when (yes-or-no-p (format "Close session '%s'? " tab-name))
       (funcall orig-fun tab-number to-tab))))
 
+(defun ai-session--on-tab-switch ()
+  "Called when switching tabs. Updates NeoTree to show session's workspace."
+  (when-let* ((current-tab (tab-bar--current-tab))
+              (tab-name (alist-get 'name current-tab)))
+    ;; Find session matching this tab
+    (let ((found-session nil))
+      (maphash (lambda (_id session)
+                 (let* ((agent (ai-session-agent session))
+                        (emoji (ai-session--get-agent-emoji agent))
+                        (expected-name (format "%s %s" emoji (ai-session-title session))))
+                   (when (string= tab-name expected-name)
+                     (setq found-session session))))
+               ai-session--sessions)
+      (if found-session
+          ;; Session tab - update NeoTree to show workspace
+          (progn
+            (setq ai-session--current found-session)
+            (let ((workspace (ai-session-workspace found-session)))
+              (when (fboundp 'neotree-dir)
+                ;; Close and reopen NeoTree with new directory
+                (when (and (fboundp 'neo-global--window-exists-p)
+                           (neo-global--window-exists-p))
+                  (neotree-hide))
+                (neotree-dir workspace)
+                (when (fboundp 'neotree-refresh)
+                  (neotree-refresh))
+                ;; Return focus to previous window
+                (other-window 1))))
+        ;; Not a session tab (e.g., New Session) - hide NeoTree
+        (when (and (fboundp 'neo-global--window-exists-p)
+                   (neo-global--window-exists-p))
+          (neotree-hide))))))
+
 (defun ai-session--setup-tab-bar ()
   "Enable and configure tab-bar-mode for session management."
   (tab-bar-mode 1)
@@ -341,6 +374,9 @@
   (setq tab-bar-tab-name-format-function #'ai-session--tab-bar-tab-name-format)
   ;; Add confirmation advice
   (advice-add 'tab-bar-close-tab :around #'ai-session--confirm-before-close-tab)
+  ;; Add tab switch hook
+  (add-hook 'tab-bar-tab-post-select-functions
+            (lambda (&rest _) (ai-session--on-tab-switch)))
   ;; Add [+] button at the end (our custom one that opens session wizard)
   (setq tab-bar-format '(tab-bar-format-tabs ai-session--tab-bar-add-button)))
 
@@ -591,15 +627,15 @@ If RESUME is non-nil, use resume_args with session_id."
   "Setup multi-pane layout for SESSION.
 If RESUME is non-nil, resume existing session.
 Layout:
-+------------------+------------------+
-|  [Inner Tabs: Terminal | Files...]  |
-+------------------+------------------+
-|                  |                  |
-|    Main/Files    |    AI Chat       |
-|                  |                  |
-+------------------+------------------+
-|                Terminal             |
-+------------------------------------+"
++----------+------------------+------------------+
+|          |  [Inner Tabs: Terminal | Files...]  |
+|          +------------------+------------------+
+|          |                  |                  |
+| NeoTree  |    Main/Files    |    AI Chat       |
+|          |                  |                  |
+|          +------------------+------------------+
+|          |                Terminal             |
++----------+------------------------------------+"
   (delete-other-windows)
 
   ;; Initialize inner tabs list
@@ -612,7 +648,15 @@ Layout:
          (agent-cmd (ai-session--build-agent-command session resume))
          (terminal-buffer nil))
 
-    ;; Main window (left) - for file editing
+    ;; Open NeoTree on the left first
+    (when (fboundp 'neotree-dir)
+      (setq neo-window-width 35)
+      (neotree-dir workspace))
+
+    ;; Move to the main area (right of NeoTree)
+    (other-window 1)
+
+    ;; Main window - for file editing
     (switch-to-buffer main-buffer)
     (with-current-buffer main-buffer
       (let ((inhibit-read-only t))
@@ -621,7 +665,7 @@ Layout:
         (insert (format "Agent: %s\n" (ai-session-agent session)))
         (insert (format "Workspace: %s\n\n" workspace))
         (insert "Press 'f' to open a file\n")
-        (insert "Press 'n' to open neotree\n")
+        (insert "Press 'n' to toggle neotree\n")
         (insert "Press 't' to focus terminal\n")
         (insert "\nUse inner tabs above to switch between Terminal, Files, etc.\n")
         (insert "Click [+] to add new tabs.\n"))
@@ -676,7 +720,6 @@ Layout:
       (ai-session--create-inner-tab session "Terminal" 'terminal terminal-buffer ""))
 
     ;; Return to main window
-    (other-window -1)
     (other-window -1)
 
     ;; Track buffers
