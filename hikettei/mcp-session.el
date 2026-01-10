@@ -29,24 +29,14 @@
   :group 'tools
   :prefix "ai-session-")
 
-(defcustom ai-session-mcp-server-command "uv"
-  "Command to run MCP server."
-  :type 'string
-  :group 'ai-session)
-
-(defcustom ai-session-mcp-server-args '("run" "emacs-mcp-server")
-  "Arguments for MCP server command."
-  :type '(repeat string)
-  :group 'ai-session)
-
-(defcustom ai-session-mcp-server-directory "~/.emacs.d"
-  "Directory where MCP server pyproject.toml is located."
-  :type 'string
-  :group 'ai-session)
-
 (defcustom ai-session-mcp-config-dir "~/.emacs.d/.hikettei/mcp-configs"
   "Directory to store generated MCP config files."
   :type 'string
+  :group 'ai-session)
+
+(defcustom ai-session-use-elisp-mcp-server t
+  "Use Elisp MCP server instead of Python."
+  :type 'boolean
   :group 'ai-session)
 
 (defcustom ai-session-available-agents '("Claude" "Gemini" "Codex")
@@ -65,7 +55,7 @@
   agent                 ; AI agent name (Claude, Gemini, Codex)
   agent-config          ; Agent config plist from JSON
   workspace             ; Workspace directory path
-  mcp-process           ; MCP server process
+  mcp-server            ; MCP server object (cons of server . port for Elisp)
   mcp-config-file       ; Path to MCP config file for this session
   tab-index             ; Tab-bar index
   created-at            ; Creation timestamp
@@ -198,6 +188,9 @@
 ;;; MCP Server Management
 ;;; ============================================================
 
+;; Require Elisp MCP server
+(require 'mcp-server nil t)
+
 (defun ai-session--ensure-mcp-config-dir ()
   "Ensure MCP config directory exists."
   (let ((dir (expand-file-name ai-session-mcp-config-dir)))
@@ -209,14 +202,18 @@
   "Generate MCP config file for SESSION and return its path."
   (ai-session--ensure-mcp-config-dir)
   (let* ((workspace (ai-session-workspace session))
+         (mcp-server (ai-session-mcp-server session))
+         (port (when (consp mcp-server) (cdr mcp-server)))
          (config-file (expand-file-name
                        (format "mcp-%s.json" (ai-session-id session))
                        ai-session-mcp-config-dir))
-         (mcp-config `((mcpServers
-                        . ((emacs-editor
-                            . ((command . ,ai-session-mcp-server-command)
-                               (args . ,(vconcat ai-session-mcp-server-args))
-                               (cwd . ,(expand-file-name ai-session-mcp-server-directory))))))))
+         (mcp-config (if (and ai-session-use-elisp-mcp-server port)
+                         ;; HTTP-based Elisp server
+                         `((mcpServers
+                            . ((emacs-editor
+                                . ((url . ,(format "http://127.0.0.1:%d/mcp" port)))))))
+                       ;; Fallback: no MCP server configured
+                       `((mcpServers . ,(make-hash-table :test 'equal)))))
          (json-encoding-pretty-print t))
     (with-temp-file config-file
       (insert (json-encode mcp-config)))
@@ -231,30 +228,33 @@
       (delete-file config-file))))
 
 (defun ai-session--start-mcp-server (workspace)
-  "Start MCP server for WORKSPACE and return the process."
-  (let* ((default-directory (expand-file-name ai-session-mcp-server-directory))
-         (process-name (format "mcp-server-%s" (md5 workspace)))
-         (buffer-name (format "*MCP Server: %s*" (file-name-nondirectory workspace)))
-         (args (append ai-session-mcp-server-args (list workspace))))
-    ;; Kill existing process if any
-    (when-let ((existing (get-process process-name)))
-      (delete-process existing))
-    ;; Start new process
-    (let ((proc (apply #'start-process
-                       process-name
-                       buffer-name
-                       ai-session-mcp-server-command
-                       args)))
-      (set-process-query-on-exit-flag proc nil)
-      (message "MCP Server started for %s" workspace)
-      proc)))
+  "Start MCP server for WORKSPACE.
+Returns the server object."
+  (if (and ai-session-use-elisp-mcp-server
+           (fboundp 'mcp-server-start))
+      ;; Use Elisp MCP server
+      (let ((result (mcp-server-start workspace)))
+        (message "Elisp MCP Server started on port %d for %s"
+                 (cdr result) workspace)
+        result)
+    ;; No MCP server available
+    (message "MCP Server not available")
+    nil))
 
 (defun ai-session--stop-mcp-server (session)
   "Stop MCP server for SESSION."
-  (when-let ((proc (ai-session-mcp-process session)))
-    (when (process-live-p proc)
-      (delete-process proc)
-      (message "MCP Server stopped for %s" (ai-session-title session)))))
+  (when-let ((server (ai-session-mcp-server session)))
+    (if (and ai-session-use-elisp-mcp-server
+             (fboundp 'mcp-server-stop))
+        ;; Elisp server
+        (progn
+          (mcp-server-stop)
+          (message "MCP Server stopped for %s" (ai-session-title session)))
+      ;; Legacy process-based server
+      (when (processp server)
+        (when (process-live-p server)
+          (delete-process server)
+          (message "MCP Server stopped for %s" (ai-session-title session)))))))
 
 ;;; ============================================================
 ;;; Tab-bar Integration (Top-level Session Tabs)
@@ -452,7 +452,7 @@ If RESUME is non-nil, use resume_args with session_id."
                    :agent agent
                    :agent-config agent-config
                    :workspace (expand-file-name workspace)
-                   :mcp-process nil
+                   :mcp-server nil
                    :mcp-config-file nil
                    :tab-index nil
                    :created-at (current-time)
@@ -465,11 +465,12 @@ If RESUME is non-nil, use resume_args with session_id."
     (ai-session--setup-tab-bar)
     (ai-session--create-tab session reuse-tab)
 
-    ;; Generate MCP config and start server
+    ;; Start MCP server first (needed for config generation)
+    (setf (ai-session-mcp-server session)
+          (ai-session--start-mcp-server workspace))
+    ;; Then generate MCP config (uses server port)
     (setf (ai-session-mcp-config-file session)
           (ai-session--generate-mcp-config session))
-    (setf (ai-session-mcp-process session)
-          (ai-session--start-mcp-server workspace))
 
     (ai-session--add-to-history session)
     (ai-session--setup-layout session nil)
@@ -485,7 +486,7 @@ If RESUME is non-nil, use resume_args with session_id."
                    :agent agent
                    :agent-config agent-config
                    :workspace (expand-file-name workspace)
-                   :mcp-process nil
+                   :mcp-server nil
                    :mcp-config-file nil
                    :tab-index nil
                    :created-at (current-time)
@@ -497,10 +498,12 @@ If RESUME is non-nil, use resume_args with session_id."
     (ai-session--setup-tab-bar)
     (ai-session--create-tab session)
 
+    ;; Start MCP server first (needed for config generation)
+    (setf (ai-session-mcp-server session)
+          (ai-session--start-mcp-server workspace))
+    ;; Then generate MCP config (uses server port)
     (setf (ai-session-mcp-config-file session)
           (ai-session--generate-mcp-config session))
-    (setf (ai-session-mcp-process session)
-          (ai-session--start-mcp-server workspace))
 
     (ai-session--update-last-accessed session)
     (ai-session--setup-layout session t)
