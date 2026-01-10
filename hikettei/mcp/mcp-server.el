@@ -25,6 +25,7 @@
 (require 'json)
 (require 'url-parse)
 (require 'web-server)
+(require 'memory)
 
 (declare-function file-editor-open "file-editor")
 (declare-function ws-start "web-server")
@@ -388,12 +389,20 @@ Returns formatted response string."
   (let* ((name (alist-get "name" params nil nil #'string=))
          (args (alist-get "arguments" params nil nil #'string=))
          (result (pcase name
+                   ;; File tools
                    ("emacs_read_file" (mcp-server--tool-read-file args))
                    ("emacs_write_file" (mcp-server--tool-write-file args))
                    ("emacs_edit_file" (mcp-server--tool-edit-file args))
                    ("emacs_eval" (mcp-server--tool-eval args))
                    ("emacs_screenshot" (mcp-server--tool-screenshot args))
                    ("emacs_get_pending_review" (mcp-server--tool-get-pending-review args))
+                   ;; Memory tools
+                   ("memory_note" (mcp-memory--tool-note args))
+                   ("memory_store" (mcp-memory--tool-store args))
+                   ("memory_search" (mcp-memory--tool-search args))
+                   ("memory_get" (mcp-memory--tool-get args))
+                   ("memory_list" (mcp-memory--tool-list args))
+                   ("memory_delete" (mcp-memory--tool-delete args))
                    (_ (format "Error: Unknown tool: %s" name)))))
     `((content . [((type . "text") (text . ,result))]))))
 
@@ -402,7 +411,7 @@ Returns formatted response string."
   (pcase method
     ("initialize" (mcp-server--handle-initialize params))
     ("notifications/initialized" nil)
-    ("tools/list" `((tools . ,(vconcat mcp-server--tools))))
+    ("tools/list" `((tools . ,(vconcat mcp-server--tools mcp-memory--tools))))
     ("tools/call" (mcp-server--handle-tools-call params))
     (_ `((content . [((type . "text")
                       (text . ,(format "Error: Unknown method: %s" method)))])))))
