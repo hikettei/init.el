@@ -1,7 +1,7 @@
 ;;; multi-panel.el --- Multi-Panel WorkArea System -*- lexical-binding: t; -*-
 
 ;; Author: hikettei
-;; Version: 0.2.0
+;; Version: 0.3.0
 ;; Package-Requires: ((emacs "28.1"))
 
 ;;; Commentary:
@@ -9,18 +9,16 @@
 ;; Multi-panel system for AI-assisted development.
 ;;
 ;; Layout (fixed structure):
-;; +--------+----------------------------------+-------------+
-;; |        | [Autopilot] [Terminal] [...] [N][A]           |
-;; |        +----------------------------------+             |
-;; |        |                                  |             |
-;; | Neo    |           WorkArea               |  AI Chat    |
-;; | Tree   |    (can contain child panels)    |  (vterm)    |
-;; |        |                                  |             |
-;; +--------+----------------------------------+-------------+
+;; +--------+----------------------------------+
+;; |        | [Autopilot] [Terminal] [...]     |
+;; |        +----------------------------------+
+;; |        |                                  |
+;; | Neo    |           WorkArea               |
+;; | Tree   |    (can contain child panels)    |
+;; |        |                                  |
+;; +--------+----------------------------------+
 ;;
 ;; - NeoTree: Toggle with C-x j n (left side window)
-;; - AIChat: Toggle with C-x j c (right side window)
-;; - [N][A]: Toggle buttons in tab bar
 ;;
 
 ;;; Code:
@@ -39,31 +37,6 @@
 (defcustom mp-neotree-width 30
   "NeoTree width in columns."
   :type 'integer
-  :group 'multi-panel)
-
-(defcustom mp-ai-chat-width 60
-  "AI Chat width in columns."
-  :type 'integer
-  :group 'multi-panel)
-
-(defcustom mp-ai-chat-min-width 30
-  "Minimum AI Chat width in columns."
-  :type 'integer
-  :group 'multi-panel)
-
-(defcustom mp-vterm-anti-flicker t
-  "Enable intelligent flicker reduction for vterm display."
-  :type 'boolean
-  :group 'multi-panel)
-
-(defcustom mp-vterm-render-delay 0.005
-  "Rendering optimization delay for batched terminal updates (seconds)."
-  :type 'number
-  :group 'multi-panel)
-
-(defcustom mp-prevent-reflow-glitch t
-  "Workaround for terminal scrolling bug on height-only changes."
-  :type 'boolean
   :group 'multi-panel)
 
 (defvar mp--source-directory
@@ -112,17 +85,8 @@
 (defvar mp--neotree-visible t
   "Whether NeoTree side panel is visible.")
 
-(defvar mp--ai-chat-visible t
-  "Whether AI Chat side panel is visible.")
-
 (defvar mp--neotree-window nil
   "Window reference for NeoTree.")
-
-(defvar mp--ai-chat-window nil
-  "Window reference for AI Chat.")
-
-(defvar mp--ai-chat-buffer nil
-  "Buffer for AI Chat vterm.")
 
 (defvar mp--workarea-window nil
   "Window reference for main WorkArea.")
@@ -132,141 +96,6 @@
 
 (defvar mp--feat-tab-bar-height 2
   "Height of the Feat Tab bar in lines.")
-
-;;; ============================================================
-;;; Vterm Anti-Flicker Optimization
-;;; ============================================================
-
-(defvar-local mp--vterm-render-queue nil
-  "Queue for optimizing terminal rendering sequences.")
-
-(defvar-local mp--vterm-render-timer nil
-  "Timer for executing queued rendering operations.")
-
-(defun mp--ai-chat-buffer-p (buffer)
-  "Check if BUFFER is our AI Chat buffer."
-  (when-let ((name (if (stringp buffer) buffer (buffer-name buffer))))
-    (string-prefix-p "*AI Chat" name)))
-
-(defun mp--vterm-smart-renderer (orig-fun process input)
-  "Smart rendering filter for optimized vterm display updates.
-ORIG-FUN is the underlying filter to enhance.
-PROCESS is the terminal process being optimized.
-INPUT contains the terminal output stream."
-  (if (or (not mp-vterm-anti-flicker)
-          (not (mp--ai-chat-buffer-p (process-buffer process))))
-      (funcall orig-fun process input)
-    (with-current-buffer (process-buffer process)
-      (let* ((complex-redraw-detected
-              (string-match-p "\033\\[[0-9]*A.*\033\\[K.*\033\\[[0-9]*A.*\033\\[K" input))
-             (clear-count (cl-count-if (lambda (s) (string= s "\033[K"))
-                                       (split-string input "\033\\[K" t)))
-             (escape-count (cl-count ?\033 input))
-             (input-length (length input))
-             (escape-density (if (> input-length 0)
-                                 (/ (float escape-count) input-length)
-                               0)))
-        (if (or complex-redraw-detected
-                (and (> escape-density 0.3)
-                     (>= clear-count 2))
-                mp--vterm-render-queue)
-            (progn
-              (setq mp--vterm-render-queue
-                    (concat mp--vterm-render-queue input))
-              (when mp--vterm-render-timer
-                (cancel-timer mp--vterm-render-timer))
-              (setq mp--vterm-render-timer
-                    (run-at-time mp-vterm-render-delay nil
-                                 (lambda (buf)
-                                   (when (buffer-live-p buf)
-                                     (with-current-buffer buf
-                                       (when mp--vterm-render-queue
-                                         (let ((inhibit-redisplay t)
-                                               (data mp--vterm-render-queue))
-                                           (setq mp--vterm-render-queue nil
-                                                 mp--vterm-render-timer nil)
-                                           (funcall orig-fun
-                                                    (get-buffer-process buf)
-                                                    data))))))
-                                 (current-buffer))))
-          (funcall orig-fun process input))))))
-
-;;; ============================================================
-;;; Terminal Reflow Prevention
-;;; ============================================================
-
-(defun mp--terminal-reflow-filter (original-fn &rest args)
-  "Filter terminal reflows to prevent height-only resize triggers.
-Wraps ORIGINAL-FN to suppress reflow signals unless terminal width changed."
-  (let* ((base-result (apply original-fn args))
-         (dimensions-stable t))
-    (dolist (win (window-list))
-      (when-let* ((buf (window-buffer win))
-                  ((mp--ai-chat-buffer-p buf)))
-        (let* ((new-width (window-width win))
-               (cached-width (window-parameter win 'mp-cached-width)))
-          (unless (eql new-width cached-width)
-            (setq dimensions-stable nil)
-            (set-window-parameter win 'mp-cached-width new-width)))))
-    (cond
-     ((not (mp--ai-chat-buffer-p (current-buffer)))
-      base-result)
-     ((bound-and-true-p vterm-copy-mode)
-      nil)
-     ((not dimensions-stable)
-      base-result)
-     (t nil))))
-
-(defvar mp--resize-timer nil
-  "Timer for debounced resize.")
-
-(defun mp--setup-vterm-optimizations ()
-  "Setup vterm rendering optimizations."
-  (when (and (fboundp 'vterm) mp-vterm-anti-flicker)
-    (advice-add 'vterm--filter :around #'mp--vterm-smart-renderer))
-  (when (and (fboundp 'vterm--window-adjust-process-window-size)
-             mp-prevent-reflow-glitch)
-    (advice-add 'vterm--window-adjust-process-window-size
-                :around #'mp--terminal-reflow-filter))
-  ;; Global hook for mouse resize - debounced force resize
-  (add-hook 'window-size-change-functions #'mp--on-window-size-change))
-
-(defun mp--on-window-size-change (_frame)
-  "Debounced force resize for AI Chat vterm on window resize."
-  ;; Cancel previous timer
-  (when mp--resize-timer
-    (cancel-timer mp--resize-timer))
-  ;; Schedule resize after mouse drag settles
-  (setq mp--resize-timer
-        (run-at-time 0.1 nil #'mp--do-force-resize)))
-
-(defun mp--do-force-resize ()
-  "Actually perform the force resize (like C-x j R)."
-  (setq mp--resize-timer nil)
-  (when (and mp--ai-chat-buffer
-             (buffer-live-p mp--ai-chat-buffer)
-             mp--ai-chat-window
-             (window-live-p mp--ai-chat-window))
-    (with-current-buffer mp--ai-chat-buffer
-      (when (and (eq major-mode 'vterm-mode)
-                 (bound-and-true-p vterm--term))
-        (let ((width (window-body-width mp--ai-chat-window))
-              (height (window-body-height mp--ai-chat-window)))
-          (vterm--set-size vterm--term height width)
-          (when-let ((proc (get-buffer-process (current-buffer))))
-            (signal-process proc 'SIGWINCH)))))))
-
-(defun mp--cleanup-vterm-optimizations ()
-  "Remove vterm rendering optimizations."
-  (when (fboundp 'vterm--filter)
-    (advice-remove 'vterm--filter #'mp--vterm-smart-renderer))
-  (when (fboundp 'vterm--window-adjust-process-window-size)
-    (advice-remove 'vterm--window-adjust-process-window-size
-                   #'mp--terminal-reflow-filter))
-  (remove-hook 'window-size-change-functions #'mp--on-window-size-change)
-  (when mp--resize-timer
-    (cancel-timer mp--resize-timer)
-    (setq mp--resize-timer nil)))
 
 ;;; ============================================================
 ;;; Feat Tab Definition System
@@ -304,10 +133,6 @@ Wraps ORIGINAL-FN to suppress reflow signals unless terminal width changed."
 
 ;; Toggle keybindings
 (define-key mp-prefix-map (kbd "n") #'mp-toggle-neotree)
-(define-key mp-prefix-map (kbd "c") #'mp-toggle-ai-chat)
-(define-key mp-prefix-map (kbd "[") #'mp-shrink-ai-chat)
-(define-key mp-prefix-map (kbd "]") #'mp-enlarge-ai-chat)
-(define-key mp-prefix-map (kbd "R") #'mp-force-resize-ai-chat)
 
 ;;; ============================================================
 ;;; Feat Tab Definition Macro
@@ -339,7 +164,7 @@ Wraps ORIGINAL-FN to suppress reflow signals unless terminal width changed."
                    (lambda () (interactive) (mp-switch-to ',id))))))
 
 ;;; ============================================================
-;;; Side Panel Management (NeoTree & AI Chat)
+;;; Side Panel Management (NeoTree)
 ;;; ============================================================
 
 (defun mp-toggle-neotree ()
@@ -348,14 +173,6 @@ Wraps ORIGINAL-FN to suppress reflow signals unless terminal width changed."
   (if mp--neotree-visible
       (mp--hide-neotree)
     (mp--show-neotree))
-  (mp--update-feat-tab-bar))
-
-(defun mp-toggle-ai-chat ()
-  "Toggle AI Chat visibility."
-  (interactive)
-  (if mp--ai-chat-visible
-      (mp--hide-ai-chat)
-    (mp--show-ai-chat))
   (mp--update-feat-tab-bar))
 
 (defun mp--show-neotree ()
@@ -379,88 +196,6 @@ Wraps ORIGINAL-FN to suppress reflow signals unless terminal width changed."
     (neotree-hide)
     (setq mp--neotree-window nil)
     (setq mp--neotree-visible nil)))
-
-(defun mp--show-ai-chat ()
-  "Show AI Chat side panel."
-  (when (not mp--ai-chat-visible)
-    (let ((buf (or mp--ai-chat-buffer
-                   (get-buffer "*AI Chat*"))))
-      (if (and buf (buffer-live-p buf))
-          ;; Reuse existing buffer
-          (progn
-            (setq mp--ai-chat-window
-                  (display-buffer-in-side-window
-                   buf
-                   `((side . right)
-                     (window-width . ,mp-ai-chat-width)
-                     (dedicated . t)
-                     (window-parameters . ((no-delete-other-windows . t))))))
-            ;; Make window resizable
-            (set-window-parameter mp--ai-chat-window 'window-size-fixed nil)
-            (setq mp--ai-chat-visible t))
-        ;; Create new vterm
-        (setq mp--ai-chat-buffer (get-buffer-create "*AI Chat*"))
-        (setq mp--ai-chat-window
-              (display-buffer-in-side-window
-               mp--ai-chat-buffer
-               `((side . right)
-                 (window-width . ,mp-ai-chat-width)
-                 (dedicated . t)
-                 (window-parameters . ((no-delete-other-windows . t))))))
-        ;; Make window resizable
-        (set-window-parameter mp--ai-chat-window 'window-size-fixed nil)
-        (select-window mp--ai-chat-window)
-        (when (fboundp 'vterm)
-          (vterm)
-          (setq mp--ai-chat-buffer (current-buffer)))
-        (setq mp--ai-chat-visible t))
-      ;; Return to workarea
-      (when (window-live-p mp--workarea-window)
-        (select-window mp--workarea-window)))))
-
-(defun mp--hide-ai-chat ()
-  "Hide AI Chat side panel."
-  (when mp--ai-chat-visible
-    (when (and mp--ai-chat-window (window-live-p mp--ai-chat-window))
-      (delete-window mp--ai-chat-window))
-    (setq mp--ai-chat-window nil)
-    (setq mp--ai-chat-visible nil)))
-
-(defun mp-shrink-ai-chat (&optional delta)
-  "Shrink AI Chat window by DELTA columns (default 5)."
-  (interactive "P")
-  (let ((delta (or delta 5)))
-    (when (and mp--ai-chat-window (window-live-p mp--ai-chat-window))
-      (let ((current-width (window-width mp--ai-chat-window)))
-        (when (> current-width mp-ai-chat-min-width)
-          (window-resize mp--ai-chat-window (- delta) t)
-          ;; Sync vterm size after resize
-          (mp--sync-ai-chat-vterm-size))))))
-
-(defun mp-enlarge-ai-chat (&optional delta)
-  "Enlarge AI Chat window by DELTA columns (default 5)."
-  (interactive "P")
-  (let ((delta (or delta 5)))
-    (when (and mp--ai-chat-window (window-live-p mp--ai-chat-window))
-      (window-resize mp--ai-chat-window delta t)
-      ;; Sync vterm size after resize
-      (mp--sync-ai-chat-vterm-size))))
-
-(defun mp--sync-ai-chat-vterm-size ()
-  "Sync AI Chat vterm terminal size with its window."
-  (when (and mp--ai-chat-buffer
-             (buffer-live-p mp--ai-chat-buffer)
-             mp--ai-chat-window
-             (window-live-p mp--ai-chat-window))
-    (with-current-buffer mp--ai-chat-buffer
-      (when (and (eq major-mode 'vterm-mode)
-                 (bound-and-true-p vterm--term))
-        (let ((width (window-body-width mp--ai-chat-window))
-              (height (window-body-height mp--ai-chat-window)))
-          (vterm--set-size vterm--term height width)
-          ;; Send SIGWINCH to notify shell of size change
-          (when-let ((proc (get-buffer-process (current-buffer))))
-            (signal-process proc 'SIGWINCH)))))))
 
 ;;; ============================================================
 ;;; Layout Management
@@ -495,143 +230,7 @@ Wraps ORIGINAL-FN to suppress reflow signals unless terminal width changed."
       (select-window mp--workarea-window))
 
     ;; Setup AI Chat (right side window)
-    (mp--setup-ai-chat-buffer session)
-    (setq mp--ai-chat-window
-          (display-buffer-in-side-window
-           mp--ai-chat-buffer
-           `((side . right)
-             (window-width . ,mp-ai-chat-width)
-             (dedicated . t)
-             (window-parameters . ((no-delete-other-windows . t))))))
-    ;; Make the window resizable
-    (set-window-parameter mp--ai-chat-window 'window-size-fixed nil)
-    (setq mp--ai-chat-visible t)
-
-    ;; Initialize vterm in the AI Chat window
-    (mp--initialize-ai-chat-vterm)
-
-    ;; Return to WorkArea
-    (select-window mp--workarea-window)))
-
-(defvar mp--ai-chat-init-info nil
-  "Initialization info for AI Chat (workspace, cmd, buf-name).")
-
-(defun mp--setup-ai-chat-buffer (session)
-  "Prepare AI Chat initialization info for SESSION."
-  (setq mp--ai-chat-buffer (get-buffer-create "*AI Chat*"))
-  (when session
-    (let* ((workspace (and (fboundp 'ai-session-workspace)
-                           (ai-session-workspace session)))
-           (title (or (and (fboundp 'ai-session-title)
-                           (ai-session-title session))
-                      "Session"))
-           (cmd (and (fboundp 'ai-session--build-agent-command)
-                     (ai-session--build-agent-command session nil)))
-           (buf-name (format "*AI Chat: %s*" title)))
-      (setq mp--ai-chat-init-info
-            (list :workspace workspace :cmd cmd :buf-name buf-name)))))
-
-(defun mp--initialize-ai-chat-vterm ()
-  "Initialize vterm in the AI Chat window."
-  (when (and mp--ai-chat-window
-             (window-live-p mp--ai-chat-window)
-             mp--ai-chat-init-info)
-    (let* ((workspace (plist-get mp--ai-chat-init-info :workspace))
-           (cmd (plist-get mp--ai-chat-init-info :cmd))
-           (buf-name (plist-get mp--ai-chat-init-info :buf-name)))
-
-      (select-window mp--ai-chat-window)
-
-      (if (and (fboundp 'vterm) cmd (not (string-empty-p cmd)))
-          ;; Create vterm and send command after initialization
-          (let ((vterm-buffer-name buf-name)
-                (vterm-kill-buffer-on-exit nil)
-                (ws workspace)
-                (agent-cmd cmd))
-            (vterm buf-name)
-            (setq mp--ai-chat-buffer (current-buffer))
-            ;; Configure vterm buffer for better rendering
-            (mp--configure-ai-chat-vterm-buffer)
-            ;; Send command after vterm is ready
-            (run-at-time 0.3 nil
-                         (lambda (buffer ws cmd)
-                           (when (buffer-live-p buffer)
-                             (with-current-buffer buffer
-                               (when (and (derived-mode-p 'vterm-mode)
-                                          (boundp 'vterm--process)
-                                          vterm--process
-                                          (process-live-p vterm--process))
-                                 (vterm-send-string
-                                  (format "cd %s && %s\n"
-                                          (shell-quote-argument ws) cmd))))))
-                         mp--ai-chat-buffer ws agent-cmd))
-        ;; Fallback: plain vterm
-        (when (fboundp 'vterm)
-          (vterm buf-name)
-          (setq mp--ai-chat-buffer (current-buffer))))
-
-      (setq mp--ai-chat-init-info nil))))
-
-(defun mp--configure-ai-chat-vterm-buffer ()
-  "Configure vterm buffer settings for AI Chat."
-  (when (derived-mode-p 'vterm-mode)
-    ;; Add small delay to batch updates and prevent flicker
-    ;; nil causes immediate updates which flickers
-    (setq-local vterm-timer-delay 0.01)
-    ;; Prevent auto-scroll flicker
-    (setq-local vterm-scroll-to-bottom-on-output nil)
-    ;; Disable immediate redraw to batch updates
-    (when (boundp 'vterm--redraw-immididately)
-      (setq-local vterm--redraw-immididately nil))
-    ;; Let vterm control cursor entirely
-    (setq-local cursor-in-non-selected-windows nil)
-    (setq-local blink-cursor-mode nil)
-    (setq-local cursor-type nil)
-    ;; Disable hl-line to reduce flicker
-    (setq-local global-hl-line-mode nil)
-    (when (featurep 'hl-line)
-      (hl-line-mode -1))
-    ;; Remove margins/fringes that affect terminal width calculation
-    (setq-local left-margin-width 0)
-    (setq-local right-margin-width 0)
-    (set-window-margins (selected-window) 0 0)
-    (set-window-fringes (selected-window) 0 0)
-    ;; Fix nobreak-space theming in prompt
-    (face-remap-add-relative 'nobreak-space :underline nil :foreground nil)
-    ;; Increase process read buffering
-    (when-let ((proc (get-buffer-process (current-buffer))))
-      (set-process-query-on-exit-flag proc nil)
-      (when (fboundp 'process-put)
-        (process-put proc 'read-output-max 4096)))
-    ;; Add hook for window resize sync
-    (add-hook 'window-configuration-change-hook
-              #'mp--vterm-sync-size nil t)))
-
-(defun mp--vterm-sync-size ()
-  "Sync vterm terminal size with window size."
-  (when (and (eq major-mode 'vterm-mode)
-             (bound-and-true-p vterm--term))
-    (let ((width (window-body-width))
-          (height (window-body-height)))
-      (vterm--set-size vterm--term height width)
-      ;; Send SIGWINCH to notify shell of size change
-      (when-let ((proc (get-buffer-process (current-buffer))))
-        (signal-process proc 'SIGWINCH)))))
-
-(defun mp-force-resize-ai-chat ()
-  "Force AI Chat vterm to recalculate size."
-  (interactive)
-  (when (and mp--ai-chat-buffer (buffer-live-p mp--ai-chat-buffer))
-    (with-current-buffer mp--ai-chat-buffer
-      (when (and (eq major-mode 'vterm-mode)
-                 (bound-and-true-p vterm--term))
-        (let ((width (window-body-width mp--ai-chat-window))
-              (height (window-body-height mp--ai-chat-window)))
-          (vterm--set-size vterm--term height width)
-          ;; Send SIGWINCH to notify shell
-          (when-let ((proc (get-buffer-process (current-buffer))))
-            (signal-process proc 'SIGWINCH))
-          (message "AI Chat resized to %dx%d" width height))))))
+    (mp--show-ai-chat)))
 
 ;;; ============================================================
 ;;; Feat Tab Bar
@@ -674,14 +273,14 @@ Wraps ORIGINAL-FN to suppress reflow signals unless terminal width changed."
                              'help-echo "Toggle AI Chat (C-x j c)")))
     (concat neo-btn " " ai-btn)))
 
-(defvar mp--toggle-neo-keymap
-  (let ((map (make-sparse-keymap)))
-    (define-key map [mouse-1] #'mp-toggle-neotree)
-    map))
-
 (defvar mp--toggle-ai-keymap
   (let ((map (make-sparse-keymap)))
     (define-key map [mouse-1] #'mp-toggle-ai-chat)
+    map))
+
+(defvar mp--toggle-neo-keymap
+  (let ((map (make-sparse-keymap)))
+    (define-key map [mouse-1] #'mp-toggle-neotree)
     map))
 
 (defun mp--feat-tab-keymap (id)
@@ -787,10 +386,65 @@ Wraps ORIGINAL-FN to suppress reflow signals unless terminal width changed."
     ;; Re-show side panels if they were visible
     (when mp--neotree-visible
       (setq mp--neotree-visible nil)
-      (mp--show-neotree))
-    (when mp--ai-chat-visible
-      (setq mp--ai-chat-visible nil)
-      (mp--show-ai-chat))))
+      (mp--show-neotree))))
+
+;;; ============================================================
+;;; AI Chat (vterm + Claude)
+;;; ============================================================
+
+(defcustom mp-ai-chat-width-fraction 0.16
+  "AI Chat window width as fraction of frame width (default 1/6)."
+  :type 'number
+  :group 'multi-panel)
+
+(defvar mp--ai-chat-visible nil
+  "Whether AI Chat is visible.")
+
+(defvar mp--ai-chat-buffer nil
+  "AI Chat vterm buffer.")
+
+(defun mp-toggle-ai-chat ()
+  "Toggle AI Chat visibility."
+  (interactive)
+  (if-let ((win (and mp--ai-chat-buffer
+                     (buffer-live-p mp--ai-chat-buffer)
+                     (get-buffer-window mp--ai-chat-buffer))))
+      (progn
+        (delete-window win)
+        (setq mp--ai-chat-visible nil))
+    (mp--show-ai-chat))
+  (mp--update-feat-tab-bar))
+
+(defun mp--show-ai-chat ()
+  "Show AI Chat in side window."
+  (unless (and mp--ai-chat-buffer (buffer-live-p mp--ai-chat-buffer))
+    (let* ((session (and (boundp 'ai-session--current) ai-session--current))
+           (workspace (if (and session (fboundp 'ai-session-workspace))
+                          (ai-session-workspace session)
+                        default-directory))
+           (cmd (when (and session (fboundp 'ai-session--build-agent-command))
+                  (ai-session--build-agent-command session nil)))
+           (default-directory workspace)
+           (vterm-shell "/bin/zsh")
+           (vterm-kill-buffer-on-exit nil))
+      (setq mp--ai-chat-buffer
+            (save-window-excursion (vterm "*AI Chat*")))
+      (when cmd
+        (run-at-time 0.2 nil
+                     (lambda (c b)
+                       (when (buffer-live-p b)
+                         (with-current-buffer b
+                           (vterm-send-string (concat c "\n")))))
+                     cmd mp--ai-chat-buffer))))
+  (display-buffer-in-side-window
+   mp--ai-chat-buffer
+   `((side . right)
+     (slot . 0)
+     (window-width . ,mp-ai-chat-width-fraction)
+     (window-parameters . ((no-delete-other-windows . t)))))
+  (setq mp--ai-chat-visible t))
+
+(define-key mp-prefix-map (kbd "c") #'mp-toggle-ai-chat)
 
 ;;; ============================================================
 ;;; Panel Loading
@@ -813,12 +467,6 @@ Wraps ORIGINAL-FN to suppress reflow signals unless terminal width changed."
 (defun mp-initialize (session)
   "Initialize multi-panel layout for SESSION."
   (interactive)
-  ;; Setup vterm optimizations
-  (mp--setup-vterm-optimizations)
-
-  ;; Allow narrower windows for AI Chat
-  (setq window-min-width (min window-min-width mp-ai-chat-min-width))
-
   (when (= 0 (hash-table-count mp--feat-tabs))
     (mp--load-panels))
 
