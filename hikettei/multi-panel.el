@@ -201,8 +201,9 @@
 ;;; Layout Management
 ;;; ============================================================
 
-(defun mp--setup-base-layout (session)
-  "Setup the base multi-panel layout for SESSION."
+(defun mp--setup-base-layout (session &optional resume)
+  "Setup the base multi-panel layout for SESSION.
+If RESUME is non-nil, resume the agent session."
   (delete-other-windows)
   (let ((workspace (if (and session (fboundp 'ai-session-workspace))
                        (ai-session-workspace session)
@@ -230,7 +231,7 @@
       (select-window mp--workarea-window))
 
     ;; Setup AI Chat (right side window)
-    (mp--show-ai-chat)))
+    (mp--show-ai-chat resume)))
 
 ;;; ============================================================
 ;;; Feat Tab Bar
@@ -415,15 +416,16 @@
     (mp--show-ai-chat))
   (mp--update-feat-tab-bar))
 
-(defun mp--show-ai-chat ()
-  "Show AI Chat in side window."
+(defun mp--show-ai-chat (&optional resume)
+  "Show AI Chat in side window.
+If RESUME is non-nil, resume the agent session."
   (unless (and mp--ai-chat-buffer (buffer-live-p mp--ai-chat-buffer))
     (let* ((session (and (boundp 'ai-session--current) ai-session--current))
            (workspace (if (and session (fboundp 'ai-session-workspace))
                           (ai-session-workspace session)
                         default-directory))
            (cmd (when (and session (fboundp 'ai-session--build-agent-command))
-                  (ai-session--build-agent-command session nil)))
+                  (ai-session--build-agent-command session resume)))
            (default-directory workspace)
            (vterm-shell "/bin/zsh")
            (vterm-kill-buffer-on-exit nil))
@@ -464,13 +466,14 @@
 ;;; ============================================================
 
 ;;;###autoload
-(defun mp-initialize (session)
-  "Initialize multi-panel layout for SESSION."
+(defun mp-initialize (session &optional resume)
+  "Initialize multi-panel layout for SESSION.
+If RESUME is non-nil, resume the agent session."
   (interactive)
   (when (= 0 (hash-table-count mp--feat-tabs))
     (mp--load-panels))
 
-  (mp--setup-base-layout session)
+  (mp--setup-base-layout session resume)
 
   (if (> (hash-table-count mp--feat-tabs) 0)
       (mp-switch-to (car mp--feat-tab-order))

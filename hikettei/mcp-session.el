@@ -462,7 +462,7 @@ Includes MCP config flag based on the agent type."
 (defun ai-session--setup-layout (session &optional resume)
   "Setup layout for SESSION. Delegates to multi-panel if available."
   (if (fboundp 'mp-initialize)
-      (mp-initialize session)
+      (mp-initialize session resume)
     (ai-session--setup-fallback-layout session resume)))
 
 (defun ai-session--setup-fallback-layout (session &optional resume)
