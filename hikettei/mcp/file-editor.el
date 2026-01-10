@@ -133,10 +133,10 @@
           (random 65536) (random 65536) (random 65536)))
 
 (defun file-editor--split-lines (str)
-  "Split STR into lines."
+  "Split STR into lines, preserving empty lines."
   (if (or (null str) (string-empty-p str))
       '("")
-    (split-string str "\n")))
+    (split-string str "\n" nil)))
 
 (defun file-editor--get-comment-for-line (session line-num)
   "Get comment for LINE-NUM in SESSION."
@@ -213,47 +213,65 @@ Returns original STR if fontification fails."
     (insert (propertize " AI Comment:\n" 'face 'file-editor-header-face))
     (insert (propertize (format " %s\n\n" comment) 'face 'font-lock-comment-face))))
 
+(defun file-editor--lcs-matrix (a b)
+  "Build LCS length matrix for sequences A and B."
+  (let* ((m (length a))
+         (n (length b))
+         (dp (make-vector (1+ m) nil)))
+    (dotimes (i (1+ m))
+      (aset dp i (make-vector (1+ n) 0)))
+    (dotimes (i m)
+      (dotimes (j n)
+        (if (string= (nth i a) (nth j b))
+            (aset (aref dp (1+ i)) (1+ j)
+                  (1+ (aref (aref dp i) j)))
+          (aset (aref dp (1+ i)) (1+ j)
+                (max (aref (aref dp (1+ i)) j)
+                     (aref (aref dp i) (1+ j)))))))
+    dp))
+
+(defun file-editor--lcs-backtrack (dp a b)
+  "Backtrack through DP matrix to find LCS pairs of matching indices."
+  (let ((pairs '())
+        (i (length a))
+        (j (length b)))
+    (while (and (> i 0) (> j 0))
+      (cond
+       ((string= (nth (1- i) a) (nth (1- j) b))
+        (push (cons (1- i) (1- j)) pairs)
+        (setq i (1- i) j (1- j)))
+       ((> (aref (aref dp (1- i)) j)
+           (aref (aref dp i) (1- j)))
+        (setq i (1- i)))
+       (t
+        (setq j (1- j)))))
+    pairs))
+
 (defun file-editor--compute-line-diff (orig-lines new-lines)
-  "Compute line-by-line diff between ORIG-LINES and NEW-LINES.
-Returns list of (type content orig-idx new-idx) where type is 'same, 'remove, or 'add."
-  (let ((result '())
-        (orig-len (length orig-lines))
-        (new-len (length new-lines))
-        (oi 0)
-        (ni 0))
-    ;; Simple diff: compare line by line, handle additions/deletions
-    (while (or (< oi orig-len) (< ni new-len))
-      (let ((orig-line (and (< oi orig-len) (nth oi orig-lines)))
-            (new-line (and (< ni new-len) (nth ni new-lines))))
-        (cond
-         ;; Both exist and are equal
-         ((and orig-line new-line (string= orig-line new-line))
-          (push (list 'same orig-line oi ni) result)
-          (setq oi (1+ oi) ni (1+ ni)))
-         ;; Look ahead to find if orig-line exists later in new-lines (deletion)
-         ;; or if new-line exists later in orig-lines (addition)
-         (t
-          (let ((orig-in-new (and orig-line (cl-position orig-line new-lines :start ni :test #'string=)))
-                (new-in-orig (and new-line (cl-position new-line orig-lines :start oi :test #'string=))))
-            (cond
-             ;; orig-line was deleted (not found ahead in new, or new-line found sooner in orig)
-             ((and orig-line
-                   (or (null orig-in-new)
-                       (and new-in-orig (< new-in-orig (or orig-in-new 999999)))))
-              (push (list 'remove orig-line oi nil) result)
-              (setq oi (1+ oi)))
-             ;; new-line was added
-             ((and new-line)
-              (push (list 'add new-line nil ni) result)
-              (setq ni (1+ ni)))
-             ;; Fallback: remove then add
-             (t
-              (when orig-line
-                (push (list 'remove orig-line oi nil) result)
-                (setq oi (1+ oi)))
-              (when new-line
-                (push (list 'add new-line nil ni) result)
-                (setq ni (1+ ni))))))))))
+  "Compute line-by-line diff using LCS algorithm.
+Returns list of (type content orig-idx new-idx)."
+  (let* ((dp (file-editor--lcs-matrix orig-lines new-lines))
+         (lcs-pairs (file-editor--lcs-backtrack dp orig-lines new-lines))
+         (result '())
+         (oi 0)
+         (ni 0))
+    (dolist (pair lcs-pairs)
+      (let ((lcs-oi (car pair))
+            (lcs-ni (cdr pair)))
+        (while (< oi lcs-oi)
+          (push (list 'remove (nth oi orig-lines) oi nil) result)
+          (setq oi (1+ oi)))
+        (while (< ni lcs-ni)
+          (push (list 'add (nth ni new-lines) nil ni) result)
+          (setq ni (1+ ni)))
+        (push (list 'same (nth oi orig-lines) oi ni) result)
+        (setq oi (1+ oi) ni (1+ ni))))
+    (while (< oi (length orig-lines))
+      (push (list 'remove (nth oi orig-lines) oi nil) result)
+      (setq oi (1+ oi)))
+    (while (< ni (length new-lines))
+      (push (list 'add (nth ni new-lines) nil ni) result)
+      (setq ni (1+ ni)))
     (nreverse result)))
 
 (defun file-editor--render-full-file (session)

@@ -105,9 +105,9 @@
   (let* ((file-content (with-temp-buffer
                          (insert-file-contents path)
                          (buffer-string)))
-         (lines (split-string file-content "\n" t))
+         (lines (split-string file-content "\n" nil))
          (start-idx (max 0 (1- start-line)))
-         (new-lines (split-string new-content "\n"))
+         (new-lines (split-string new-content "\n" nil))
          (result (append (cl-subseq lines 0 start-idx)
                          new-lines
                          (cl-subseq lines end-line))))
@@ -119,7 +119,7 @@
   (let* ((content (with-temp-buffer
                     (insert-file-contents path)
                     (buffer-string)))
-         (lines (split-string content "\n"))
+         (lines (split-string content "\n" nil))
          (start-idx (max 0 (1- start-line)))
          (end-idx (min (length lines) end-line)))
     (string-join (cl-subseq lines start-idx end-idx) "\n")))
