@@ -627,14 +627,10 @@ If RESUME is non-nil, use resume_args with session_id."
   "Setup multi-pane layout for SESSION.
 If RESUME is non-nil, resume existing session.
 Layout:
-+----------+------------------+------------------+
-|          |  [Inner Tabs: Terminal | Files...]  |
-|          +------------------+------------------+
-|          |                  |                  |
-| NeoTree  |    Main/Files    |    AI Chat       |
-|          |                  |                  |
-|          +------------------+------------------+
-|          |                Terminal             |
++----------+------------------------------------+
+|          |                                    |
+| NeoTree  |   AI Chat (vterm with agent)       |
+|          |                                    |
 +----------+------------------------------------+"
   (delete-other-windows)
 
@@ -643,62 +639,24 @@ Layout:
   (setf (ai-session-current-inner-tab session) 0)
 
   (let* ((workspace (ai-session-workspace session))
-         (main-buffer (get-buffer-create
-                       (format "*Session: %s*" (ai-session-title session))))
          (agent-cmd (ai-session--build-agent-command session resume))
          (terminal-buffer nil))
 
-    ;; Open NeoTree on the left first
+    ;; Open NeoTree on the left first (1/7 of frame width, AI Chat gets 6/7)
     (when (fboundp 'neotree-dir)
-      (setq neo-window-width 35)
+      (setq neo-window-width (/ (frame-width) 7))
       (neotree-dir workspace))
 
     ;; Move to the main area (right of NeoTree)
     (other-window 1)
 
-    ;; Main window - for file editing
-    (switch-to-buffer main-buffer)
-    (with-current-buffer main-buffer
-      (let ((inhibit-read-only t))
-        (erase-buffer)
-        (insert (format "Session: %s\n" (ai-session-title session)))
-        (insert (format "Agent: %s\n" (ai-session-agent session)))
-        (insert (format "Workspace: %s\n\n" workspace))
-        (insert "Press 'f' to open a file\n")
-        (insert "Press 'n' to toggle neotree\n")
-        (insert "Press 't' to focus terminal\n")
-        (insert "\nUse inner tabs above to switch between Terminal, Files, etc.\n")
-        (insert "Click [+] to add new tabs.\n"))
-      (ai-session-main-mode))
-
-    ;; Create inner tab for main buffer
-    (ai-session--create-inner-tab session "Main" 'main main-buffer "")
-
-    ;; Right window - for AI chat (placeholder)
-    (split-window-right)
-    (other-window 1)
-    (let ((chat-buffer (get-buffer-create
-                        (format "*AI Chat: %s*" (ai-session-title session)))))
-      (switch-to-buffer chat-buffer)
-      (with-current-buffer chat-buffer
-        (let ((inhibit-read-only t))
-          (erase-buffer)
-          (insert (format "AI Chat (%s)\n" (ai-session-agent session)))
-          (insert "─────────────────────────\n\n")
-          (insert "(Chat interface placeholder)\n")))
-      ;; Create inner tab for chat
-      (ai-session--create-inner-tab session "Chat" 'chat chat-buffer ""))
-
-    ;; Bottom window - Terminal with AI agent
-    (other-window -1)  ; back to main
-    (split-window-below (- (window-height) 15))
-    (other-window 1)
-
+    ;; Main window - AI Chat (vterm with agent)
     (let ((cmd (format "cd %s && %s" (shell-quote-argument workspace) agent-cmd)))
       (cond
        ((fboundp 'vterm)
         (vterm)
         (setq terminal-buffer (current-buffer))
+        (rename-buffer (format "*AI Chat: %s*" (ai-session-title session)) t)
         ;; Wait for vterm to initialize before sending command
         (run-at-time 0.1 nil
                      (lambda (c)
@@ -709,24 +667,21 @@ Layout:
        ((fboundp 'multi-term)
         (multi-term)
         (setq terminal-buffer (current-buffer))
+        (rename-buffer (format "*AI Chat: %s*" (ai-session-title session)) t)
         (term-send-raw-string (concat cmd "\n")))
        (t
         (term "/bin/zsh")
         (setq terminal-buffer (current-buffer))
+        (rename-buffer (format "*AI Chat: %s*" (ai-session-title session)) t)
         (term-send-raw-string (concat cmd "\n")))))
 
-    ;; Create inner tab for terminal
+    ;; Create inner tab for AI Chat terminal
     (when terminal-buffer
-      (ai-session--create-inner-tab session "Terminal" 'terminal terminal-buffer ""))
-
-    ;; Return to main window
-    (other-window -1)
+      (ai-session--create-inner-tab session "AI Chat" 'terminal terminal-buffer ""))
 
     ;; Track buffers
     (setf (ai-session-buffers session)
-          (list main-buffer
-                (get-buffer (format "*AI Chat: %s*" (ai-session-title session)))
-                terminal-buffer))
+          (list terminal-buffer))
 
     ;; Setup header-line for inner tabs in all buffers
     (ai-session--update-all-header-lines)))
