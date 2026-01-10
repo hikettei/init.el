@@ -317,16 +317,15 @@ Highlight fades after `activity-highlight-duration' seconds."
 (defun activity-panel-start-edit-review (session)
   "Start overlay-based edit review for SESSION.
 SESSION is a file-editor-session struct."
-  (unless (activity-panel-active-p)
-    (cl-return-from activity-panel-start-edit-review nil))
-  ;; Clear any existing read highlights
-  (activity--clear-read-overlays)
-  ;; Store session
-  (setf (activity-state-review-session activity--state) session)
-  ;; Show the file being edited
-  (let* ((file-path (file-editor-session-file-path session))
-         (start-line (file-editor-session-start-line session)))
-    (activity-panel-show-file file-path start-line)))
+  (when (activity-panel-active-p)
+    ;; Clear any existing read highlights
+    (activity--clear-read-overlays)
+    ;; Store session
+    (setf (activity-state-review-session activity--state) session)
+    ;; Show the file being edited
+    (let* ((file-path (file-editor-session-file-path session))
+           (start-line (file-editor-session-start-line session)))
+      (activity-panel-show-file file-path start-line))))
 
 (defun activity-panel-end-edit-review ()
   "End the current edit review session."

@@ -452,9 +452,11 @@ CONTENT is the added line content."
     (when (buffer-live-p buf)
       (with-current-buffer buf
         (file-editor-review-mode -1))))
-  ;; Notify Activity Panel
-  (when (fboundp 'activity-panel-end-edit-review)
-    (activity-panel-end-edit-review))
+  ;; Clear pending review flag
+  (when (boundp 'mp--review-pending)
+    (setq mp--review-pending nil)
+    (when (fboundp 'mp--update-feat-tab-bar)
+      (mp--update-feat-tab-bar)))
   ;; Build result and callback
   (let* ((line-comments (file-editor-session-line-comments session))
          (result (file-editor--build-result session decision feedback line-comments)))
@@ -546,8 +548,7 @@ Returns the session ID."
     (with-current-buffer buffer
       (auto-revert-mode 1)
       (file-editor-review-mode 1))
-    ;; Display in Autopilot's file window WITHOUT switching tabs
-    ;; This allows review to appear in background while user works elsewhere
+    ;; Display in Autopilot's file window if available
     (let ((autopilot-win (and (boundp 'mp--autopilot-file-window)
                               mp--autopilot-file-window
                               (window-live-p mp--autopilot-file-window)
@@ -560,13 +561,15 @@ Returns the session ID."
               (goto-char (point-min))
               (forward-line (1- start-line))
               (recenter 3))
-            ;; Notify activity panel
-            (when (fboundp 'activity-panel-start-edit-review)
-              (activity-panel-start-edit-review session)))
-        ;; Fallback: if no autopilot window, use pop-to-buffer
-        (pop-to-buffer buffer)
-        (goto-char (point-min))
-        (forward-line (1- start-line))))
+            ;; Clear pending flag since we're displaying
+            (when (boundp 'mp--review-pending)
+              (setq mp--review-pending nil)))
+        ;; Not on Autopilot tab - set pending indicator
+        (when (boundp 'mp--review-pending)
+          (setq mp--review-pending session)
+          ;; Update tab bar to show indicator
+          (when (fboundp 'mp--update-feat-tab-bar)
+            (mp--update-feat-tab-bar)))))
     id))
 
 ;;;###autoload

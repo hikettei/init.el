@@ -159,9 +159,11 @@ If WINDOW is protected or deletion would leave only protected windows, block it.
 (defvar mp--feat-tab-order '()
   "Ordered list of feat tab IDs for display.")
 
+(defvar mp--review-pending nil
+  "When non-nil, a review is pending in Autopilot.")
+
 (defvar mp--ai-chat-window nil
   "Window reference for AI Chat (right side).")
-
 ;;; ============================================================
 ;;; Keymap
 ;;; ============================================================
@@ -319,8 +321,11 @@ If RESUME is non-nil, resume the agent session."
              (face (if active 'mp-feat-tab-active-face 'mp-feat-tab-inactive-face))
              (icon (mp-feat-tab-icon tab))
              (name (mp-feat-tab-name tab))
-             (key (mp-feat-tab-key tab)))
-        (push (propertize (format " %s %s [%s] " icon name key)
+             (key (mp-feat-tab-key tab))
+             ;; Show 🔴 indicator for autopilot when review pending
+             (indicator (if (and (eq id 'autopilot) mp--review-pending)
+                           "🔴 " "")))
+        (push (propertize (format " %s%s %s [%s] " indicator icon name key)
                           'face face
                           'mouse-face 'highlight
                           'keymap (mp--feat-tab-keymap id)
@@ -480,15 +485,13 @@ Saves buffer list and window layout within the WorkArea."
 
       (setq mp--current-feat-tab feat-tab-id)
 
-      ;; Restore saved state or setup fresh
-      (if (mp-feat-tab-workarea-state tab)
-          (mp--restore-workarea-state tab)
-        ;; Fresh setup
-        (mp--clear-workarea)
-        (when (window-live-p mp--workarea-window)
-          (select-window mp--workarea-window))
-        (when (mp-feat-tab-setup-fn tab)
-          (funcall (mp-feat-tab-setup-fn tab) session)))
+      ;; Clear and setup fresh - always call setup function
+      ;; This ensures panel-specific windows (like autopilot's file window) are created
+      (mp--clear-workarea)
+      (when (window-live-p mp--workarea-window)
+        (select-window mp--workarea-window))
+      (when (mp-feat-tab-setup-fn tab)
+        (funcall (mp-feat-tab-setup-fn tab) session))
 
       (mp--update-feat-tab-bar)
       (message "Switched to %s" (mp-feat-tab-name tab)))))

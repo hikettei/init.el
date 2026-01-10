@@ -67,7 +67,7 @@
 ;;; ============================================================
 
 (defun mp--setup-autopilot (session)
-  "Setup Autopilot mode with Activity Panel.
+  "Setup Autopilot mode - single window for AI file display.
 SESSION is the current mcp-session."
   ;; Ensure autorevert is loaded
   (require 'autorevert nil t)
@@ -82,35 +82,34 @@ SESSION is the current mcp-session."
   
   (when (and mp--workarea-window (window-live-p mp--workarea-window))
     (select-window mp--workarea-window)
-    ;; Calculate split widths
-    (let* ((total-width (window-width))
-           (file-width (floor (* total-width mp-autopilot-panel-ratio))))
-      ;; Left window shows the file with overlays
-      (let ((file-window (selected-window)))
-        ;; Create a scratch buffer for now
-        (switch-to-buffer (get-buffer-create "*File Display*"))
-        (with-current-buffer "*File Display*"
-          (let ((inhibit-read-only t))
-            (erase-buffer)
-            (insert (propertize "\n\n  Waiting for AI file access...\n\n"
-                               'face '(:foreground "#6272a4" :slant italic)))
-            (insert "  When the AI reads or edits a file,\n")
-            (insert "  it will be displayed here with\n")
-            (insert "  highlights and diff overlays.\n"))
-          (special-mode))
-        ;; Split for status panel on the right
-        (let ((status-window (split-window-right file-width)))
-          ;; Store window references
-          (setq mp--autopilot-file-window file-window)
-          ;; Setup status buffer in right window
-          (select-window status-window)
-          (switch-to-buffer (mp--create-autopilot-status-buffer))
-          ;; Initialize Activity Panel with our windows
-          (require 'activity-panel nil t)
-          (when (fboundp 'activity-panel-initialize)
-            (activity-panel-initialize status-window file-window))
-          ;; Return to file window
-          (select-window file-window))))))
+    ;; Single window for file display
+    (setq mp--autopilot-file-window (selected-window))
+    
+    ;; Check for pending review
+    (if (and (boundp 'mp--review-pending) mp--review-pending)
+        ;; Display pending review
+        (let* ((pending-session mp--review-pending)
+               (buffer (file-editor-session-file-buffer pending-session))
+               (start-line (file-editor-session-start-line pending-session)))
+          ;; Clear pending flag first
+          (setq mp--review-pending nil)
+          (mp--update-feat-tab-bar)
+          ;; Display if buffer is live
+          (when (buffer-live-p buffer)
+            (set-window-buffer mp--autopilot-file-window buffer)
+            (with-selected-window mp--autopilot-file-window
+              (goto-char (point-min))
+              (forward-line (1- start-line))
+              (recenter 3))))
+      ;; No pending review - show default buffer
+      (switch-to-buffer (get-buffer-create "*Autopilot*"))
+      (with-current-buffer "*Autopilot*"
+        (let ((inhibit-read-only t))
+          (erase-buffer)
+          (insert (propertize "\n  Autopilot Mode\n\n" 'face '(:foreground "#50fa7b" :weight bold)))
+          (insert "  Waiting for AI file access...\n\n")
+          (insert "  Files read or edited by AI will appear here.\n"))
+        (special-mode)))))
 
 (defun mp--teardown-autopilot (session)
   "Teardown Autopilot mode, cleaning up Activity Panel.
