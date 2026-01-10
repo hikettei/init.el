@@ -542,34 +542,53 @@ Returns the session ID."
     ;; Store session
     (puthash id session file-editor--sessions)
     (setq file-editor--current-session session)
-    ;; Create diff overlays on the actual file buffer
-    (file-editor--create-diff-overlays session)
-    ;; Enable review minor mode and auto-revert
-    (with-current-buffer buffer
-      (auto-revert-mode 1)
-      (file-editor-review-mode 1))
-    ;; Display in Autopilot's file window if available
-    (let ((autopilot-win (and (boundp 'mp--autopilot-file-window)
-                              mp--autopilot-file-window
-                              (window-live-p mp--autopilot-file-window)
-                              mp--autopilot-file-window)))
-      (if autopilot-win
-          (progn
-            (set-window-buffer autopilot-win buffer)
-            ;; Position without stealing focus
-            (with-selected-window autopilot-win
-              (goto-char (point-min))
-              (forward-line (1- start-line))
-              (recenter 3))
-            ;; Clear pending flag since we're displaying
-            (when (boundp 'mp--review-pending)
-              (setq mp--review-pending nil)))
-        ;; Not on Autopilot tab - set pending indicator
-        (when (boundp 'mp--review-pending)
-          (setq mp--review-pending session)
-          ;; Update tab bar to show indicator
-          (when (fboundp 'mp--update-feat-tab-bar)
-            (mp--update-feat-tab-bar)))))
+    
+    ;; Check review mode and dispatch accordingly
+    (let ((review-mode (if (boundp 'mp-autopilot-review-mode)
+                           mp-autopilot-review-mode
+                         'manual)))
+      (pcase review-mode
+        ('no-review
+         ;; Auto-approve immediately without showing UI
+         (when (fboundp 'mp-autopilot--handle-no-review)
+           (mp-autopilot--handle-no-review session)))
+        ('auto-review
+         ;; Spawn background AI reviewer
+         (when (fboundp 'mp-autopilot--handle-auto-review)
+           (mp-autopilot--handle-auto-review session)))
+        ('hybrid
+         ;; Spawn AI reviewer, then show to human
+         (when (fboundp 'mp-autopilot--handle-hybrid-review)
+           (mp-autopilot--handle-hybrid-review session)))
+        (_  ;; 'manual or fallback
+         ;; Create diff overlays on the actual file buffer
+         (file-editor--create-diff-overlays session)
+         ;; Enable review minor mode and auto-revert
+         (with-current-buffer buffer
+           (auto-revert-mode 1)
+           (file-editor-review-mode 1))
+         ;; Display in Autopilot's file window if available
+         (let ((autopilot-win (and (boundp 'mp--autopilot-file-window)
+                                   mp--autopilot-file-window
+                                   (window-live-p mp--autopilot-file-window)
+                                   mp--autopilot-file-window)))
+           (if autopilot-win
+               (progn
+                 (set-window-buffer autopilot-win buffer)
+                 ;; Position without stealing focus
+                 (with-selected-window autopilot-win
+                   (goto-char (point-min))
+                   (forward-line (1- start-line))
+                   (recenter 3))
+                 ;; Clear pending flag since we're displaying
+                 (when (boundp 'mp--review-pending)
+                   (setq mp--review-pending nil)))
+             ;; Not on Autopilot tab - set pending indicator
+             (when (boundp 'mp--review-pending)
+               (setq mp--review-pending session)
+               ;; Update tab bar to show indicator
+               (when (fboundp 'mp--update-feat-tab-bar)
+                 (mp--update-feat-tab-bar))))))))
     id))
 
 ;;;###autoload

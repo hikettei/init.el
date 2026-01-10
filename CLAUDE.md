@@ -25,8 +25,15 @@ Immediate live update (if available): use emacs_eval to evaluate:
 
 `(load-file "path/to/related_file.el")`
 
-
 Pick the most relevant file(s) that contain the actual change.
+
+## emacs_eval Snippets
+
+Frequently used `emacs_eval` operations are documented in `PROMPT.md`. Always refer to and update this file when you discover useful eval patterns. This serves as a quick reference for common operations like:
+- Switching review modes
+- Reloading files
+- Updating UI components
+- Debugging state
 
 ## Non-Negotiable Rules
 

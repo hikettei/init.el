@@ -303,6 +303,22 @@ Returns formatted response string."
       (dolist (f to-delete)
         (delete-file f)))))
 
+(defun mcp-server--tool-get-pending-review (_args)
+  "Get current pending review data for AI reviewer."
+  (if (and (boundp 'file-editor--current-session) file-editor--current-session)
+      (let ((session file-editor--current-session))
+        (json-encode
+         `((file . ,(file-editor-session-file-path session))
+           (start_line . ,(file-editor-session-start-line session))
+           (end_line . ,(file-editor-session-end-line session))
+           (original . ,(file-editor-session-original-content session))
+           (new . ,(file-editor-session-new-content session))
+           (ai_comment . ,(or (file-editor-session-ai-comment session) ""))
+           (review_mode . ,(if (boundp 'mp-autopilot-review-mode)
+                               (symbol-name mp-autopilot-review-mode)
+                             "manual")))))
+    "No pending review"))
+
 ;;; ============================================================
 ;;; MCP Protocol
 ;;; ============================================================
@@ -354,8 +370,12 @@ Returns formatted response string."
      (description . "Capture current Emacs frame as PNG screenshot. Saves to workspace/.hikettei/screen_shots/. Returns path - use Read tool to view the image.")
      (inputSchema . ((type . "object")
                      (properties . ())
+                     (required . []))))
+    ((name . "emacs_get_pending_review")
+     (description . "Get data for the current pending file edit review. Returns JSON with file path, line range, original/new content, AI comment, and current review mode.")
+     (inputSchema . ((type . "object")
+                     (properties . ())
                      (required . []))))))
-
 (defun mcp-server--handle-initialize (_params)
   "Handle initialize method."
   `((protocolVersion . "2024-11-05")
@@ -373,6 +393,7 @@ Returns formatted response string."
                    ("emacs_edit_file" (mcp-server--tool-edit-file args))
                    ("emacs_eval" (mcp-server--tool-eval args))
                    ("emacs_screenshot" (mcp-server--tool-screenshot args))
+                   ("emacs_get_pending_review" (mcp-server--tool-get-pending-review args))
                    (_ (format "Error: Unknown tool: %s" name)))))
     `((content . [((type . "text") (text . ,result))]))))
 

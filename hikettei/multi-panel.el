@@ -324,8 +324,19 @@ If RESUME is non-nil, resume the agent session."
              (key (mp-feat-tab-key tab))
              ;; Show 🔴 indicator for autopilot when review pending
              (indicator (if (and (eq id 'autopilot) mp--review-pending)
-                           "🔴 " "")))
-        (push (propertize (format " %s%s %s [%s] " indicator icon name key)
+                           "🔴 " ""))
+             ;; Show review mode indicator for autopilot
+             (mode-indicator (if (and (eq id 'autopilot)
+                                      (boundp 'mp-autopilot-review-mode))
+                                (format " [%s]"
+                                        (pcase mp-autopilot-review-mode
+                                          ('manual "M")
+                                          ('hybrid "H")
+                                          ('auto-review "A")
+                                          ('no-review "N")
+                                          (_ "?")))
+                              "")))
+        (push (propertize (format " %s%s %s [%s]%s " indicator icon name key mode-indicator)
                           'face face
                           'mouse-face 'highlight
                           'keymap (mp--feat-tab-keymap id)

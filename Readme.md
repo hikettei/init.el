@@ -189,6 +189,71 @@ Model Context Protocol integration for AI-Emacs communication.
 - Approve / Request Changes workflow
 - Integration with AI edit suggestions
 
+### Review Modes
+
+The Autopilot panel supports 4 review modes for AI file edits. Switch modes with `C-x j m`.
+
+```
++------------------------------------------------------------------+
+|  🔴 Autopilot [a] [M]  [Terminal] [Explore]           [N] [A]    |
++------------------------------------------------------------------+
+                    ^
+                    └── Review Mode Indicator: [M] [H] [A] [N]
+```
+
+| Mode | Indicator | Description |
+|------|-----------|-------------|
+| **Manual** | `[M]` | Human reviews all edits (default) |
+| **Hybrid** | `[H]` | AI pre-reviews, adds comments → Human confirms |
+| **AutoReview** | `[A]` | AI automatically approves/rejects |
+| **NoReview** | `[N]` | Auto-approve all edits immediately |
+
+**Key Bindings:**
+| Key | Action |
+|-----|--------|
+| `C-x j m` | Cycle through review modes |
+| `C-c C-c` | Approve edit (during review) |
+| `C-c C-k` | Reject edit (during review) |
+| `c` | Add line comment (during review) |
+| `M-n` / `M-p` | Navigate between diff hunks |
+
+**Mode Details:**
+
+- **Manual**: Every AI edit opens the review UI. You see the diff with:
+  - Red background for removed lines
+  - Green phantom text for added lines
+  - Header showing AI's comment
+
+- **Hybrid**: A separate AI process reviews the edit first:
+  - Shows `[AI recommends: APPROVE/REJECT]` in header
+  - AI may add line comments
+  - You make the final decision
+
+- **AutoReview**: Background AI decides automatically:
+  - Spawns `claude --print` to review
+  - Returns detailed reason for decision
+  - No human interaction required
+
+- **NoReview**: Instant auto-approval:
+  - Edits applied immediately
+  - Useful for trusted refactoring tasks
+  - ⚠️ Use with caution!
+
+**Autopilot Buffer Display:**
+```
+  Autopilot Mode
+
+  Waiting for AI file access...
+
+  Files read or edited by AI will appear here.
+
+  ─────────────────────────────────────
+
+  Review Mode: Manual
+
+  C-x j m - Cycle review mode
+```
+
 ### Panel System (`hikettei/panel/`)
 
 Modular workspace panels that can be switched via the Feat Tab Bar.
