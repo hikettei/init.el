@@ -5,6 +5,10 @@
         (load-file pathname)
         (message "File %s does not exist." pathname))))
 
+;; Add hikettei subdirectories to load-path for require
+(add-to-list 'load-path (expand-file-name "~/.emacs.d/hikettei/mcp/"))
+(add-to-list 'load-path (expand-file-name "~/.emacs.d/hikettei/panel/"))
+
 (include "0package-manager.el") ;; Setup Elpaca and use-package
 (include "1multi-term.el")      ;; Multi-term setup
 (include "2theme.el")           ;; Doom-Theme, Fonts, Configuration
@@ -12,11 +16,15 @@
 (include "4common-lisp.el")     ;; Emacs as a Common Lisp IDE
 (include "5python.el")          ;; Python Development Environment
 (include "6markdown.el")        ;; Markdown Editing Environment
-;(include "7eaf.el")             ;; Emacs Application Framework Setup
+; (include "7eaf.el")             ;; Emacs Application Framework Setup
 ;(include "8claude-code.el")     ;; Claude Code Configurations
+(include "mcp/file-editor.el")  ;; MCP File Editor Review UI
+(include "mcp/mcp-server.el")   ;; MCP HTTP Server for AI Agents
+(include "multi-panel.el")      ;; Multi-Panel WorkArea System
+(include "mcp-session.el")      ;; AI Session Management
 (include "style.el")            ;; Style Configuration
 (include "keybindings.el")      ;; Keybindings for Emacs
-(include "dashboard.el")        ;; Dashboard setup
+(include "session-wizard.el")   ;; Startup Screen & Session Creation
 ;; ↑ Open Browser Graphically!
 ;; Using Discord from Emacs is possible?
 ;; Emacs Across Multiple Desktop Window?

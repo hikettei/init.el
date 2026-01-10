@@ -1,0 +1,20 @@
+{
+  "agent": {
+    "name": "Gemini",
+    "icon": "💎",
+    "color": "#48dbfb",
+    "description": "Google - Multi-modal tasks & analysis"
+  },
+  "command": {
+    "executable": "gemini",
+    "args": [],
+    "resume_args": ["--resume"],
+    "mcp_config_flag": "--mcp-config",
+    "env": {
+      "MCP_TIMEOUT": "1800000"
+    }
+  },
+  "mcp": {
+    "enabled": true
+  }
+}

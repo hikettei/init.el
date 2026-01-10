@@ -25,7 +25,6 @@
 (use-package doom-themes
   :pin melpa
   :ensure t
-  :after neotree
   :custom
   (doom-themes-enable-italic t)
   (doom-themes-enable-bold t)
@@ -54,8 +53,12 @@
 ;; Running nyan-cat in the editor
 (use-package nyan-mode
   :ensure t
+  :hook
+  (after-init . nyan-start-animation)
   :config
-  (nyan-mode 1))
+  (nyan-mode 1)
+  (setq nyan-animate-nyancat t)
+  (setq nyan-wavy-trail t))
 
 (use-package doom-modeline
   :ensure t
@@ -148,6 +151,7 @@
   :config
   (amx-mode 1))
 
+(when nil
 (use-package centaur-tabs
   :ensure t
   :demand
@@ -168,7 +172,7 @@
   (setq x-underline-at-descent-line t)
   (setq centaur-tabs-close-button "X")
   (setq centaur-tabs-set-modified-marker t)
-  (setq centaur-tabs-modified-marker "*"))
+  (setq centaur-tabs-modified-marker "*")))
 
 (use-package vundo
   :ensure t
@@ -220,3 +224,9 @@
 (setq inhibit-startup-message t) 
 (setq initial-scratch-message "")
 ; (mac-auto-ascii-mode 1)
+
+(use-package claude-code-ide
+  :vc (:url "https://github.com/manzaltu/claude-code-ide.el" :rev :newest)
+  :bind ("C-c C-'" . claude-code-ide-menu) ; Set your favorite keybinding
+  :config
+  (claude-code-ide-emacs-tools-setup)) ; Optionally enable Emacs MCP tools

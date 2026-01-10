@@ -9,3 +9,6 @@
 				   (roswell ("qlot" "exec" "ros" "-Q" "run" "dynamic-space-size=64384"))
 				   (roswell-no-qlot ("ros" "-Q" "run"  "dynamic-space-size=16384"))))
 (setf slime-default-lisp 'roswell)
+
+;; TODO:
+;; - SLIME Autocomp
