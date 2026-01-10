@@ -546,14 +546,30 @@ Returns the session ID."
     (with-current-buffer buffer
       (auto-revert-mode 1)
       (file-editor-review-mode 1))
-    ;; Integrate with Activity Panel if available
-    (if (and (fboundp 'activity-panel-active-p)
-             (activity-panel-active-p))
-        (activity-panel-start-edit-review session)
-      ;; Fallback: display in current window
-      (pop-to-buffer buffer)
-      (goto-char (point-min))
-      (forward-line (1- start-line)))
+    ;; Always switch to Autopilot tab for review
+    (when (and (fboundp 'mp-switch-to)
+               (boundp 'mp--feat-tabs)
+               (gethash 'autopilot mp--feat-tabs))
+      (mp-switch-to 'autopilot))
+    ;; Display in Autopilot's file window
+    (let ((autopilot-win (and (boundp 'mp--autopilot-file-window)
+                              mp--autopilot-file-window
+                              (window-live-p mp--autopilot-file-window)
+                              mp--autopilot-file-window)))
+      (if autopilot-win
+          (progn
+            (set-window-buffer autopilot-win buffer)
+            (with-selected-window autopilot-win
+              (goto-char (point-min))
+              (forward-line (1- start-line))
+              (recenter 3))
+            ;; Notify activity panel
+            (when (fboundp 'activity-panel-start-edit-review)
+              (activity-panel-start-edit-review session)))
+        ;; Fallback: display in current window
+        (pop-to-buffer buffer)
+        (goto-char (point-min))
+        (forward-line (1- start-line))))
     id))
 
 ;;;###autoload

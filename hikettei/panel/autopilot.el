@@ -15,10 +15,15 @@
 (require 'multi-panel)
 
 ;; Ensure mcp directory is in load-path for activity-panel
-(let ((mcp-dir (expand-file-name "mcp" (file-name-directory load-file-name))))
-  (when (file-directory-p mcp-dir)
+(let* ((this-file (or load-file-name buffer-file-name))
+       (panel-dir (and this-file (file-name-directory this-file)))
+       (hikettei-dir (and panel-dir (file-name-directory (directory-file-name panel-dir))))
+       (mcp-dir (and hikettei-dir (expand-file-name "mcp" hikettei-dir))))
+  (when (and mcp-dir (file-directory-p mcp-dir))
     (add-to-list 'load-path mcp-dir)))
 
+;; Now require activity-panel
+(require 'activity-panel)
 ;;; ============================================================
 ;;; Customization
 ;;; ============================================================

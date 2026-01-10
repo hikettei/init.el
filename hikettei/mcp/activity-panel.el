@@ -2,7 +2,7 @@
 
 ;; Author: hikettei
 ;; Version: 0.1.1
-;; Keywords: tools, mcp, review, overlay
+;; Version: 0.2.2
 
 ;;; Commentary:
 ;;

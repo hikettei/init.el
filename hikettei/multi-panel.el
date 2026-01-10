@@ -98,7 +98,30 @@
   "Height of the Feat Tab bar in lines.")
 
 ;;; ============================================================
+;;; Window Protection
+;;; ============================================================
+
+(defun mp--protected-window-p (window)
+  "Return t if WINDOW is a protected multi-panel window."
+  (and (window-live-p window)
+       (or (window-parameter window 'mp-protected)
+           (eq window mp--feat-tab-bar-window)
+           (eq window mp--neotree-window)
+           (eq window mp--ai-chat-window))))
+
+(defun mp--delete-window-advice (orig-fn &optional window)
+  "Advice for `delete-window' to protect multi-panel layout.
+If WINDOW is protected, show a message instead of deleting."
+  (let ((win (or window (selected-window))))
+    (if (mp--protected-window-p win)
+        (message "Cannot delete protected window. Use toggle commands instead.")
+      (funcall orig-fn window))))
+
+(advice-add 'delete-window :around #'mp--delete-window-advice)
+
+;;; ============================================================
 ;;; Feat Tab Definition System
+;;; ============================================================
 ;;; ============================================================
 
 (cl-defstruct mp-feat-tab
@@ -109,9 +132,9 @@
   icon         ; Icon string
   setup-fn     ; Function to setup WorkArea
   teardown-fn  ; Optional teardown function
-  state        ; Plist for tab-specific state
-  buffers      ; List of buffers created by this tab
-  window-state); Saved window configuration
+  state        ; Plist for tab-specific state (panel can store anything here)
+  buffers      ; List of buffers belonging to this tab
+  workarea-state) ; Saved workarea internal state (buffers, splits)
 
 (defvar mp--feat-tabs (make-hash-table :test 'eq)
   "Hash table of registered feat tabs by ID.")
@@ -121,6 +144,9 @@
 
 (defvar mp--feat-tab-order '()
   "Ordered list of feat tab IDs for display.")
+
+(defvar mp--ai-chat-window nil
+  "Window reference for AI Chat (right side).")
 
 ;;; ============================================================
 ;;; Keymap
@@ -157,7 +183,7 @@
                  :teardown-fn ,teardown
                  :state nil
                  :buffers nil
-                 :window-state nil)
+                 :workarea-state nil)
                 mp--feat-tabs)
        (add-to-list 'mp--feat-tab-order ',id t)
        (define-key mp-prefix-map (kbd ,key)
@@ -217,10 +243,16 @@ If RESUME is non-nil, resume the agent session."
     (setq mp--feat-tab-bar-window (selected-window))
     (switch-to-buffer (mp--setup-feat-tab-bar))
     (set-window-dedicated-p mp--feat-tab-bar-window t)
+    ;; Protect tab bar window and preserve its size
+    (set-window-parameter mp--feat-tab-bar-window 'no-delete-other-windows t)
+    (set-window-parameter mp--feat-tab-bar-window 'mp-protected t)
+    (window-preserve-size mp--feat-tab-bar-window nil t)  ; preserve height
 
     ;; Move to WorkArea below
     (other-window 1)
     (setq mp--workarea-window (selected-window))
+    ;; WorkArea should not be deleted but can be split
+    (set-window-parameter mp--workarea-window 'no-delete-other-windows t)
 
     ;; Setup NeoTree (left side window)
     (when (fboundp 'neotree-dir)
@@ -228,6 +260,10 @@ If RESUME is non-nil, resume the agent session."
       (neotree-dir workspace)
       (setq mp--neotree-window (neo-global--get-window))
       (setq mp--neotree-visible t)
+      ;; Protect NeoTree window
+      (when (window-live-p mp--neotree-window)
+        (set-window-parameter mp--neotree-window 'no-delete-other-windows t)
+        (set-window-parameter mp--neotree-window 'mp-protected t))
       (select-window mp--workarea-window))
 
     ;; Setup AI Chat (right side window)
@@ -320,6 +356,72 @@ If RESUME is non-nil, resume the agent session."
 ;;; Feat Tab Switching
 ;;; ============================================================
 
+(defun mp--workarea-windows ()
+  "Get list of windows that belong to the WorkArea.
+This includes mp--workarea-window and any windows split from it,
+but excludes NeoTree, AI Chat, and Feat Tab bar."
+  (let ((excluded (list mp--neotree-window mp--ai-chat-window mp--feat-tab-bar-window))
+        (result '()))
+    (dolist (win (window-list nil 'nomini))
+      (unless (or (memq win excluded)
+                  (window-dedicated-p win)
+                  ;; Also exclude side windows
+                  (window-parameter win 'window-side))
+        (push win result)))
+    (nreverse result)))
+
+(defun mp--save-workarea-state (tab)
+  "Save the current WorkArea state into TAB.
+Saves buffer list and window layout within the WorkArea."
+  (let ((workarea-wins (mp--workarea-windows)))
+    (when workarea-wins
+      (setf (mp-feat-tab-workarea-state tab)
+            (list :buffers (mapcar (lambda (w)
+                                    (list :buffer (window-buffer w)
+                                          :point (window-point w)
+                                          :start (window-start w)))
+                                  workarea-wins)
+                  :main-buffer (and (window-live-p mp--workarea-window)
+                                   (window-buffer mp--workarea-window)))))))
+
+(defun mp--restore-workarea-state (tab)
+  "Restore the WorkArea state from TAB."
+  (let ((state (mp-feat-tab-workarea-state tab)))
+    (when (and state (window-live-p mp--workarea-window))
+      ;; First clear extra workarea windows
+      (mp--clear-workarea-windows)
+      ;; Restore main buffer
+      (let ((main-buf (plist-get state :main-buffer)))
+        (when (and main-buf (buffer-live-p main-buf))
+          (set-window-buffer mp--workarea-window main-buf)
+          ;; Restore point from first buffer entry
+          (let ((first-buf-state (car (plist-get state :buffers))))
+            (when first-buf-state
+              (set-window-point mp--workarea-window (plist-get first-buf-state :point))
+              (set-window-start mp--workarea-window (plist-get first-buf-state :start)))))))))
+
+(defun mp--clear-workarea-windows ()
+  "Delete extra windows in WorkArea, keeping only the main one."
+  (let ((workarea-wins (mp--workarea-windows)))
+    ;; Keep only mp--workarea-window, delete others
+    (dolist (win workarea-wins)
+      (unless (eq win mp--workarea-window)
+        (when (window-live-p win)
+          (delete-window win)))))
+  ;; Ensure workarea window is valid
+  (unless (window-live-p mp--workarea-window)
+    ;; Try to find a valid workarea window
+    (let ((wins (mp--workarea-windows)))
+      (when wins
+        (setq mp--workarea-window (car wins))))))
+
+(defun mp--clear-workarea ()
+  "Clear WorkArea to a blank state."
+  (mp--clear-workarea-windows)
+  (when (window-live-p mp--workarea-window)
+    (select-window mp--workarea-window)
+    (switch-to-buffer (get-buffer-create "*WorkArea*"))))
+
 (defun mp-switch-to (feat-tab-id)
   "Switch to feat tab with FEAT-TAB-ID."
   (interactive)
@@ -328,66 +430,30 @@ If RESUME is non-nil, resume the agent session."
     (unless tab
       (error "Unknown feat tab: %s" feat-tab-id))
 
-    ;; Save current tab's window state
-    (when mp--current-feat-tab
-      (let ((current-tab (gethash mp--current-feat-tab mp--feat-tabs)))
-        (when current-tab
-          (mp--save-workarea-state current-tab)
-          (when (mp-feat-tab-teardown-fn current-tab)
-            (funcall (mp-feat-tab-teardown-fn current-tab) session)))))
+    ;; Only switch if not already on this tab
+    (unless (eq mp--current-feat-tab feat-tab-id)
+      ;; Save current tab's state
+      (when mp--current-feat-tab
+        (let ((current-tab (gethash mp--current-feat-tab mp--feat-tabs)))
+          (when current-tab
+            (mp--save-workarea-state current-tab)
+            (when (mp-feat-tab-teardown-fn current-tab)
+              (funcall (mp-feat-tab-teardown-fn current-tab) session)))))
 
-    (setq mp--current-feat-tab feat-tab-id)
+      (setq mp--current-feat-tab feat-tab-id)
 
-    ;; Restore or setup fresh
-    (if (mp-feat-tab-window-state tab)
-        (mp--restore-workarea-state tab)
-      (mp--clear-workarea)
-      (when (window-live-p mp--workarea-window)
-        (select-window mp--workarea-window))
-      (when (mp-feat-tab-setup-fn tab)
-        (funcall (mp-feat-tab-setup-fn tab) session)))
+      ;; Restore saved state or setup fresh
+      (if (mp-feat-tab-workarea-state tab)
+          (mp--restore-workarea-state tab)
+        ;; Fresh setup
+        (mp--clear-workarea)
+        (when (window-live-p mp--workarea-window)
+          (select-window mp--workarea-window))
+        (when (mp-feat-tab-setup-fn tab)
+          (funcall (mp-feat-tab-setup-fn tab) session)))
 
-    (mp--update-feat-tab-bar)
-    (message "Switched to %s" (mp-feat-tab-name tab))))
-
-(defun mp--save-workarea-state (tab)
-  "Save the current WorkArea window state into TAB."
-  (when (window-live-p mp--workarea-window)
-    (setf (mp-feat-tab-window-state tab)
-          (list :config (current-window-configuration)
-                :buffer (window-buffer mp--workarea-window)
-                :point (window-point mp--workarea-window)))))
-
-(defun mp--restore-workarea-state (tab)
-  "Restore the WorkArea window state from TAB."
-  (let ((state (mp-feat-tab-window-state tab)))
-    (when state
-      (condition-case nil
-          (set-window-configuration (plist-get state :config))
-        (error
-         (mp--clear-workarea)
-         (when (window-live-p mp--workarea-window)
-           (select-window mp--workarea-window)
-           (when (mp-feat-tab-setup-fn tab)
-             (funcall (mp-feat-tab-setup-fn tab)
-                      (and (boundp 'ai-session--current) ai-session--current)))))))))
-
-(defun mp--clear-workarea ()
-  "Clear WorkArea, keeping side panels."
-  (when (window-live-p mp--workarea-window)
-    (select-window mp--workarea-window)
-    (delete-other-windows)
-    ;; Restore side panels and tab bar
-    (split-window-below mp--feat-tab-bar-height)
-    (setq mp--feat-tab-bar-window (selected-window))
-    (switch-to-buffer (get-buffer-create "*MP Feat Tabs*"))
-    (set-window-dedicated-p mp--feat-tab-bar-window t)
-    (other-window 1)
-    (setq mp--workarea-window (selected-window))
-    ;; Re-show side panels if they were visible
-    (when mp--neotree-visible
-      (setq mp--neotree-visible nil)
-      (mp--show-neotree))))
+      (mp--update-feat-tab-bar)
+      (message "Switched to %s" (mp-feat-tab-name tab)))))
 
 ;;; ============================================================
 ;;; AI Chat (vterm + Claude)
@@ -408,11 +474,10 @@ If RESUME is non-nil, resume the agent session."
 (defun mp-toggle-ai-chat ()
   "Toggle AI Chat visibility."
   (interactive)
-  (if-let ((win (and mp--ai-chat-buffer
-                     (buffer-live-p mp--ai-chat-buffer)
-                     (get-buffer-window mp--ai-chat-buffer))))
+  (if (and mp--ai-chat-window (window-live-p mp--ai-chat-window))
       (progn
-        (delete-window win)
+        (delete-window mp--ai-chat-window)
+        (setq mp--ai-chat-window nil)
         (setq mp--ai-chat-visible nil))
     (mp--show-ai-chat))
   (mp--update-feat-tab-bar))
@@ -439,12 +504,18 @@ If RESUME is non-nil, resume the agent session."
                          (with-current-buffer b
                            (vterm-send-string (concat c "\n")))))
                      cmd mp--ai-chat-buffer))))
-  (display-buffer-in-side-window
-   mp--ai-chat-buffer
-   `((side . right)
-     (slot . 0)
-     (window-width . ,mp-ai-chat-width-fraction)
-     (window-parameters . ((no-delete-other-windows . t)))))
+  ;; Display and track window
+  (setq mp--ai-chat-window
+        (display-buffer-in-side-window
+         mp--ai-chat-buffer
+         `((side . right)
+           (slot . 0)
+           (window-width . ,mp-ai-chat-width-fraction)
+           (window-parameters . ((no-delete-other-windows . t)
+                                (mp-protected . t))))))
+  ;; Preserve AI Chat window width
+  (when (window-live-p mp--ai-chat-window)
+    (window-preserve-size mp--ai-chat-window t t))  ; preserve width
   (setq mp--ai-chat-visible t))
 
 (define-key mp-prefix-map (kbd "c") #'mp-toggle-ai-chat)
@@ -477,7 +548,11 @@ If RESUME is non-nil, resume the agent session."
   (mp--setup-base-layout session resume)
 
   (if (> (hash-table-count mp--feat-tabs) 0)
-      (mp-switch-to (car mp--feat-tab-order))
+      ;; Always start with autopilot if available, otherwise first tab
+      (let ((start-tab (if (gethash 'autopilot mp--feat-tabs)
+                           'autopilot
+                         (car mp--feat-tab-order))))
+        (mp-switch-to start-tab))
     (when (window-live-p mp--workarea-window)
       (select-window mp--workarea-window)
       (switch-to-buffer (get-buffer-create "*WorkArea*")))))
