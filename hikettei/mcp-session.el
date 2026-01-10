@@ -29,9 +29,47 @@
   :group 'tools
   :prefix "ai-session-")
 
-(defcustom ai-session-mcp-config-dir "~/.emacs.d/.hikettei/mcp-configs"
-  "Directory to store generated MCP config files."
-  :type 'string
+(defcustom ai-session-mcp-tools
+  '(((name . "read_file")
+     (description . "Read file with line numbers. Use offset for pagination.")
+     (inputSchema . ((type . "object")
+                     (properties . ((file_path . ((type . "string")
+                                                  (description . "File path (relative to project root)")))
+                                    (offset . ((type . "integer")
+                                               (description . "Start line (0-indexed)")
+                                               (default . 0)))
+                                    (limit . ((type . "integer")
+                                              (description . "Max lines")
+                                              (default . 3000)))))
+                     (required . ["file_path"]))))
+    ((name . "write_file")
+     (description . "Create new file. Use supersede=true to overwrite existing.")
+     (inputSchema . ((type . "object")
+                     (properties . ((file_path . ((type . "string")
+                                                  (description . "File path")))
+                                    (content . ((type . "string")
+                                                (description . "File content")))
+                                    (supersede . ((type . "boolean")
+                                                  (description . "Overwrite if exists")
+                                                  (default . :json-false)))))
+                     (required . ["file_path" "content"]))))
+    ((name . "request_edit")
+     (description . "Request partial file edit. Opens review UI in Emacs for approval.")
+     (inputSchema . ((type . "object")
+                     (properties . ((file_path . ((type . "string")
+                                                  (description . "File path")))
+                                    (start_line . ((type . "integer")
+                                                   (description . "Start line (1-indexed, inclusive)")))
+                                    (end_line . ((type . "integer")
+                                                 (description . "End line (1-indexed, inclusive)")))
+                                    (content . ((type . "string")
+                                                (description . "New content")))
+                                    (comment . ((type . "string")
+                                                (description . "Explanation for reviewer")
+                                                (default . "")))))
+                     (required . ["file_path" "start_line" "end_line" "content"])))))
+  "List of MCP tools to expose to AI agents."
+  :type 'sexp
   :group 'ai-session)
 
 (defcustom ai-session-use-elisp-mcp-server t
@@ -188,58 +226,70 @@
 ;;; MCP Server Management
 ;;; ============================================================
 
-;; Require Elisp MCP server
+;; Add mcp subdirectory to load path and require MCP server
+(let ((mcp-dir (expand-file-name "mcp" (file-name-directory (or load-file-name buffer-file-name)))))
+  (when (file-directory-p mcp-dir)
+    (add-to-list 'load-path mcp-dir)))
 (require 'mcp-server nil t)
 
-(defun ai-session--ensure-mcp-config-dir ()
-  "Ensure MCP config directory exists."
-  (let ((dir (expand-file-name ai-session-mcp-config-dir)))
-    (unless (file-directory-p dir)
-      (make-directory dir t))
-    dir))
+(defun ai-session--get-mcp-config-path (session)
+  "Get the MCP config file path for SESSION.
+Config files are stored at workspace/.hikettei/mcp-config-<agent>.json"
+  (let* ((workspace (ai-session-workspace session))
+         (agent-name (downcase (ai-session-agent session)))
+         (hikettei-dir (expand-file-name ai-session--hikettei-dir workspace)))
+    (expand-file-name (format "mcp-config-%s.json" agent-name) hikettei-dir)))
 
 (defun ai-session--generate-mcp-config (session)
-  "Generate MCP config file for SESSION and return its path."
-  (ai-session--ensure-mcp-config-dir)
-  (let* ((workspace (ai-session-workspace session))
-         (mcp-server (ai-session-mcp-server session))
+  "Generate MCP config file for SESSION and return its path.
+The config file is stored at workspace/.hikettei/mcp-config-<agent>.json"
+  (ai-session--ensure-hikettei-dir (ai-session-workspace session))
+  (let* ((mcp-server (ai-session-mcp-server session))
          (port (when (consp mcp-server) (cdr mcp-server)))
-         (config-file (expand-file-name
-                       (format "mcp-%s.json" (ai-session-id session))
-                       ai-session-mcp-config-dir))
+         (config-file (ai-session--get-mcp-config-path session))
+         (agent-name (ai-session-agent session))
+         ;; Generate MCP config with the server URL
          (mcp-config (if (and ai-session-use-elisp-mcp-server port)
-                         ;; HTTP-based Elisp server
+                         ;; HTTP-based Elisp server - same format works for Claude, Gemini, Codex
                          `((mcpServers
                             . ((emacs-editor
-                                . ((url . ,(format "http://127.0.0.1:%d/mcp" port)))))))
+                                . ((url . ,(format "http://127.0.0.1:%d/mcp" port))
+                                   (type . "http"))))))
                        ;; Fallback: no MCP server configured
                        `((mcpServers . ,(make-hash-table :test 'equal)))))
          (json-encoding-pretty-print t))
     (with-temp-file config-file
       (insert (json-encode mcp-config)))
+    (message "MCP config generated at %s for %s" config-file agent-name)
     config-file))
 
 (defun ai-session--cleanup-mcp-config (session)
   "Remove MCP config file for SESSION."
-  (let ((config-file (expand-file-name
-                      (format "mcp-%s.json" (ai-session-id session))
-                      ai-session-mcp-config-dir)))
+  (let ((config-file (ai-session--get-mcp-config-path session)))
     (when (file-exists-p config-file)
-      (delete-file config-file))))
+      (delete-file config-file)
+      (message "MCP config removed: %s" config-file))))
 
-(defun ai-session--start-mcp-server (workspace)
-  "Start MCP server for WORKSPACE.
-Returns the server object."
-  (if (and ai-session-use-elisp-mcp-server
-           (fboundp 'mcp-server-start))
-      ;; Use Elisp MCP server
-      (let ((result (mcp-server-start workspace)))
-        (message "Elisp MCP Server started on port %d for %s"
-                 (cdr result) workspace)
-        result)
-    ;; No MCP server available
-    (message "MCP Server not available")
-    nil))
+(defun ai-session--start-mcp-server (session)
+  "Start MCP server for SESSION.
+Returns the server object (cons of server . port), or nil if MCP is disabled."
+  (let* ((agent-config (ai-session-agent-config session))
+         (mcp-enabled (plist-get agent-config :mcp-enabled))
+         (workspace (ai-session-workspace session)))
+    (if (not mcp-enabled)
+        (progn
+          (message "MCP disabled for agent %s" (ai-session-agent session))
+          nil)
+      (if (and ai-session-use-elisp-mcp-server
+               (fboundp 'mcp-server-start))
+          ;; Use Elisp MCP server
+          (let ((result (mcp-server-start workspace)))
+            (message "Elisp MCP Server started on port %d for %s"
+                     (cdr result) workspace)
+            result)
+        ;; No MCP server available
+        (message "MCP Server not available (web-server package may not be installed)")
+        nil))))
 
 (defun ai-session--stop-mcp-server (session)
   "Stop MCP server for SESSION."
@@ -376,9 +426,17 @@ If REUSE-CURRENT is non-nil, rename current tab instead of creating new one."
 ;;; Layout Management (delegates to multi-panel)
 ;;; ============================================================
 
+(defun ai-session--get-mcp-config-flag (agent-config config-file)
+  "Get the MCP config flag for AGENT-CONFIG with CONFIG-FILE.
+Uses the mcp-config-flag from agent config, or falls back to --mcp-config."
+  (when (and config-file (plist-get agent-config :mcp-enabled))
+    (let ((flag (or (plist-get agent-config :mcp-config-flag) "--mcp-config")))
+      (format "%s %s" flag (shell-quote-argument config-file)))))
+
 (defun ai-session--build-agent-command (session &optional resume)
   "Build the command string to launch agent for SESSION.
-If RESUME is non-nil, use resume_args with session_id."
+If RESUME is non-nil, use resume_args with session_id.
+Includes MCP config flag based on the agent type."
   (let* ((config (ai-session-agent-config session))
          (executable (plist-get config :executable))
          (args (if resume
@@ -386,10 +444,7 @@ If RESUME is non-nil, use resume_args with session_id."
                  (plist-get config :args)))
          (session-id (ai-session-session-id session))
          (mcp-config-file (ai-session-mcp-config-file session))
-         (mcp-args (when mcp-config-file
-                     (pcase executable
-                       ("claude" (format "--mcp-config %s" mcp-config-file))
-                       (_ "")))))
+         (mcp-args (ai-session--get-mcp-config-flag config mcp-config-file)))
     (string-trim
      (if resume
          (format "%s %s %s %s"
@@ -467,7 +522,7 @@ If RESUME is non-nil, use resume_args with session_id."
 
     ;; Start MCP server first (needed for config generation)
     (setf (ai-session-mcp-server session)
-          (ai-session--start-mcp-server workspace))
+          (ai-session--start-mcp-server session))
     ;; Then generate MCP config (uses server port)
     (setf (ai-session-mcp-config-file session)
           (ai-session--generate-mcp-config session))
@@ -500,7 +555,7 @@ If RESUME is non-nil, use resume_args with session_id."
 
     ;; Start MCP server first (needed for config generation)
     (setf (ai-session-mcp-server session)
-          (ai-session--start-mcp-server workspace))
+          (ai-session--start-mcp-server session))
     ;; Then generate MCP config (uses server port)
     (setf (ai-session-mcp-config-file session)
           (ai-session--generate-mcp-config session))

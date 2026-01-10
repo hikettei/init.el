@@ -29,11 +29,10 @@
 (require 'json)
 (require 'url-parse)
 
-;; Optional: web-server for HTTP transport
-(unless (featurep 'web-server)
-  (condition-case nil
-      (require 'web-server)
-    (error nil)))
+;; Use use-package for web-server dependency
+(use-package web-server
+  :ensure t
+  :defer t)
 
 ;; File editor for review UI
 (require 'file-editor)

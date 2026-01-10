@@ -8,7 +8,8 @@
   "command": {
     "executable": "gemini",
     "args": [],
-    "resume_args": ["--resume"]
+    "resume_args": ["--resume"],
+    "mcp_config_flag": "--mcp-config"
   },
   "mcp": {
     "enabled": true
