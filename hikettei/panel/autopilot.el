@@ -235,25 +235,39 @@ IMPORTANT:
           (or new "")
           (or ai-comment "None")))
 
+(defun mp-autopilot--extract-json (str)
+  "Extract JSON object from STR, handling markdown code blocks and extra text."
+  (let ((cleaned str))
+    ;; Remove markdown code blocks: ```json ... ``` or ``` ... ```
+    (when (string-match "```\\(?:json\\)?\\s-*\n?\\([^`]*\\)```" cleaned)
+      (setq cleaned (match-string 1 cleaned)))
+    ;; Find JSON object by matching braces
+    (when (string-match "\\({[^{}]*\\(?:{[^{}]*}[^{}]*\\)*}\\)" cleaned)
+      (match-string 1 cleaned))))
+
 (defun mp-autopilot--parse-review-response (output)
   "Parse JSON review response from OUTPUT string.
 Returns (decision reason comments) or nil on parse error."
-  (condition-case nil
-      (let* ((json-object-type 'alist)
-             (json-array-type 'list)
-             ;; Try to extract JSON from output (handle potential extra text)
-             (json-start (string-match "{" output))
-             (json-end (when json-start (string-match "}[^}]*$" output)))
-             (json-str (when (and json-start json-end)
-                        (substring output json-start (1+ json-end))))
-             (parsed (when json-str (json-read-from-string json-str)))
-             (decision (alist-get 'decision parsed))
-             (reason (alist-get 'reason parsed))
-             (comments (alist-get 'comments parsed)))
-        (list (if (string= decision "approve") 'approve 'reject)
-              (or reason "")
-              (or comments '())))
-    (error nil)))
+  (when (and output (not (string-empty-p output)))
+    ;; Log raw output for debugging (visible in *Messages*)
+    (message "AutoReview raw output: %s" (substring output 0 (min 200 (length output))))
+    (condition-case err
+        (let* ((json-object-type 'alist)
+               (json-array-type 'list)
+               (json-str (mp-autopilot--extract-json output))
+               (parsed (when json-str (json-read-from-string json-str)))
+               (decision (alist-get 'decision parsed))
+               (reason (alist-get 'reason parsed))
+               (comments (alist-get 'comments parsed)))
+          (when decision
+            (list (if (or (string= decision "approve")
+                          (string= decision "approved"))
+                      'approve 'reject)
+                  (or reason "")
+                  (or comments '()))))
+      (error
+       (message "AutoReview parse error: %s" err)
+       nil))))
 
 (defun mp-autopilot--spawn-review-agent (prompt callback)
   "Spawn background review agent with PROMPT, call CALLBACK with result.
@@ -263,23 +277,19 @@ CALLBACK receives (decision reason comments) or nil on error."
     (unless executable
       (funcall callback nil)
       (cl-return-from mp-autopilot--spawn-review-agent))
-    (let* ((temp-file (make-temp-file "review-prompt-" nil ".txt"))
-           (output-buffer (generate-new-buffer " *review-output*")))
-      ;; Write prompt to temp file
-      (with-temp-file temp-file (insert prompt))
-      ;; Start process
+    (let ((output-buffer (generate-new-buffer " *review-output*")))
+      ;; Pass prompt directly via -p argument
       (setq mp-autopilot--review-process
             (make-process
              :name "ai-reviewer"
              :buffer output-buffer
-             :command (list executable "--print" "-p" temp-file)
+             :command (list executable "--print" "-p" prompt)
              :sentinel (lambda (proc event)
                         (when (string-match-p "finished\\|exited" event)
                           (let ((output (with-current-buffer (process-buffer proc)
                                          (buffer-string))))
                             (funcall callback (mp-autopilot--parse-review-response output)))
-                          (ignore-errors (kill-buffer output-buffer))
-                          (ignore-errors (delete-file temp-file)))))))))
+                          (ignore-errors (kill-buffer output-buffer)))))))))
 
 ;;; ============================================================
 ;;; Review Mode Handlers

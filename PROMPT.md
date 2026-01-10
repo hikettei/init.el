@@ -1,12 +1,13 @@
 # emacs_eval Snippets
 
-Frequently used `emacs_eval` operations for this Emacs configuration.
+A quick reference for frequently used `emacs_eval` operations in this Emacs configuration.
+Keep this file updated when you discover useful patterns.
 
 ---
 
 ## Review Modes
 
-### Switch to Manual Mode
+### Switch to Manual Mode (Default)
 
 ```elisp
 (progn
