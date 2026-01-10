@@ -85,6 +85,10 @@
                     (vterm-copy-mode -1)
                   (vterm-send-key "g" nil nil t))))
 
+  ;; Shift+Enter: Send newline without executing (for Claude Code multiline input)
+  (define-key vterm-mode-map (kbd "S-<return>")
+              (lambda () (interactive) (vterm-send-key "<return>" t nil nil)))
+
   ;; Fix vterm color handling (workaround for broken commit)
   (defun old-version-of-vterm--get-color (index &rest args)
     "Old version of vterm--get-color before it was broken."
