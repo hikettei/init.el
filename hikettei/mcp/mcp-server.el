@@ -286,9 +286,9 @@ PATCH is the patch object to apply on approval."
 
 (defun mcp-server--tool-read-file (args)
   "Handle read_file tool with ARGS."
-  (let ((file-path (alist-get 'file_path args))
-        (offset (or (alist-get 'offset args) 0))
-        (limit (or (alist-get 'limit args) 3000)))
+  (let ((file-path (alist-get "file_path" args nil nil #'string=))
+        (offset (or (alist-get "offset" args nil nil #'string=) 0))
+        (limit (or (alist-get "limit" args nil nil #'string=) 3000)))
     (condition-case err
         (let* ((resolved (mcp-server--resolve-path file-path))
                (patch (mcp-server--create-patch resolved)))
@@ -300,9 +300,9 @@ PATCH is the patch object to apply on approval."
 
 (defun mcp-server--tool-write-file (args)
   "Handle write_file tool with ARGS."
-  (let ((file-path (alist-get 'file_path args))
-        (content (alist-get 'content args))
-        (supersede (alist-get 'supersede args)))
+  (let ((file-path (alist-get "file_path" args nil nil #'string=))
+        (content (alist-get "content" args nil nil #'string=))
+        (supersede (alist-get "supersede" args nil nil #'string=)))
     (condition-case err
         (let* ((resolved (mcp-server--resolve-path file-path))
                (patch (mcp-server--create-patch resolved)))
@@ -319,11 +319,11 @@ PATCH is the patch object to apply on approval."
 
 (defun mcp-server--tool-request-edit (args)
   "Handle request_edit tool with ARGS."
-  (let* ((file-path (alist-get 'file_path args))
-         (start-line (alist-get 'start_line args))
-         (end-line (alist-get 'end_line args))
-         (content (alist-get 'content args))
-         (comment (or (alist-get 'comment args) "")))
+  (let* ((file-path (alist-get "file_path" args nil nil #'string=))
+         (start-line (alist-get "start_line" args nil nil #'string=))
+         (end-line (alist-get "end_line" args nil nil #'string=))
+         (content (alist-get "content" args nil nil #'string=))
+         (comment (or (alist-get "comment" args nil nil #'string=) "")))
     ;; Validate required arguments
     (unless (and file-path start-line end-line content)
       (error "Missing required arguments: file_path=%s start_line=%s end_line=%s content=%s"
@@ -349,7 +349,20 @@ PATCH is the patch object to apply on approval."
       (mcp-server-path-security-error
        (format "Error: Access denied: %s" file-path))
       (error
-       (format "Error: %s" (error-message-string err)))))))
+       (format "Error: %s" (error-message-string err))))))
+
+(defun mcp-server--tool-eval (args)
+  "Handle eval tool with ARGS.
+Evaluates Emacs Lisp code and returns the result."
+  (let ((code (alist-get "code" args nil nil #'string=)))
+    (unless code
+      (error "Missing required argument: code"))
+    (condition-case err
+        (let* ((form (read code))
+               (result (eval form t)))
+          (format "%S" result))
+      (error
+       (format "Error: %s" (error-message-string err))))))
 
 
 ;;; ============================================================
@@ -393,7 +406,13 @@ PATCH is the patch object to apply on approval."
                                                 (description . "New content to replace the specified line range")))
                                     (comment . ((type . "string")
                                                 (description . "Explanation of the change for the reviewer")))))
-                     (required . ["file_path" "start_line" "end_line" "content" "comment"])))))
+                     (required . ["file_path" "start_line" "end_line" "content" "comment"]))))
+    ((name . "emacs_eval")
+     (description . "Evaluate Emacs Lisp code and return the result. Useful for debugging, checking server state, or running arbitrary elisp.")
+     (inputSchema . ((type . "object")
+                     (properties . ((code . ((type . "string")
+                                             (description . "Emacs Lisp code to evaluate")))))
+                     (required . ["code"])))))
   "List of MCP tools - these are REQUIRED for all file operations.")
 
 (defun mcp-server--handle-initialize (_params)
@@ -410,12 +429,13 @@ PATCH is the patch object to apply on approval."
 
 (defun mcp-server--handle-tools-call (params)
   "Handle the tools/call method with PARAMS."
-  (let* ((tool-name (alist-get 'name params))
-         (tool-args (alist-get 'arguments params))
+  (let* ((tool-name (alist-get "name" params nil nil #'string=))
+         (tool-args (alist-get "arguments" params nil nil #'string=))
          (result (pcase tool-name
                    ("emacs_read_file" (mcp-server--tool-read-file tool-args))
                    ("emacs_write_file" (mcp-server--tool-write-file tool-args))
                    ("emacs_edit_file" (mcp-server--tool-request-edit tool-args))
+                   ("emacs_eval" (mcp-server--tool-eval tool-args))
                    (_ (format "Error: Unknown tool: %s" tool-name)))))
     `((content . [((type . "text")
                    (text . ,result))]))))
@@ -436,15 +456,30 @@ PARAMS is the parameters alist."
 ;;; HTTP Server
 ;;; ============================================================
 
+(defun mcp-server--handle-reload (request)
+  "Handle GET /reload - bootstrap endpoint to reload this file.
+No JSON parsing required, just hit with: curl http://127.0.0.1:PORT/reload"
+  (let ((process (ws-process request)))
+    (condition-case err
+        (progn
+          (load-file (expand-file-name "hikettei/mcp/mcp-server.el" user-emacs-directory))
+          (ws-response-header process 200 '("Content-Type" . "text/plain"))
+          (ws-send process "OK: mcp-server.el reloaded successfully")
+          (throw 'close-connection nil))
+      (error
+       (ws-response-header process 500 '("Content-Type" . "text/plain"))
+       (ws-send process (format "Error: %s" (error-message-string err)))
+       (throw 'close-connection nil)))))
+
 (defun mcp-server--handle-post (request)
   "Handle POST request to /mcp endpoint."
   (let ((request-id nil))
     (condition-case err
         (let* ((body (ws-body request))
                (json-object (json-parse-string body :object-type 'alist))
-               (method (alist-get 'method json-object))
-               (params (alist-get 'params json-object))
-               (id (alist-get 'id json-object)))
+               (method (alist-get "method" json-object nil nil #'string=))
+               (params (alist-get "params" json-object nil nil #'string=))
+               (id (alist-get "id" json-object nil nil #'string=)))
           (setq request-id id)
           (if (null id)
               (mcp-server--send-empty-response request)
@@ -509,7 +544,8 @@ Returns (server . port) cons cell."
   ;; Start server
   (let* ((selected-port (or port 0))
          (server (ws-start
-                  `(((:POST . "^/mcp.*") . ,#'mcp-server--handle-post))
+                  `(((:GET . "^/reload$") . ,#'mcp-server--handle-reload)
+                    ((:POST . "^/mcp.*") . ,#'mcp-server--handle-post))
                   selected-port
                   nil
                   :host "127.0.0.1")))

@@ -1,17 +1,53 @@
-# AI Session Management Design
+# Self-Evolving Emacs Init.el
 
-## Development
+You have to read `Readme.md` to understand the concept of my init.el
 
-Assume you are working at smth like `~/Workplace/Projects/init.el/`, emacs is installed at `~/.emacs.d/`.
+## Mission
 
-Your changes on local workspace will be applied by running:
+- You are an expert Emacs Lisp engineer maintaining a “self-evolving” Emacs configuration. The user gives natural-language instructions, and you implement them safely and incrementally. Every change must be applied both:
+  - to disk via make install-config, and
+  - to the running Emacs session via emacs_eval by (load-file ...), so the user immediately experiences the evolution.
 
-```json
-$ make install-config # This will update your changes 
+This project assumes the user operates Claude Code from an Emacs terminal, and Emacs is connected via MCP, enabling dynamic evaluation.
+
+## Working Environment
+
+- Workspace: `~/Workplace/Projects/init.el/` (For example)
+- Target Emacs config: `~/.emacs.d/`
+
+Apply workspace → target:
+
+```sh
+make install-config
 ```
 
-And, if available, use `emacs_eval` tool to `(load-file \"related_file.el\")`. This will immediately change the user's editor screen.
+Immediate live update (if available): use emacs_eval to evaluate:
 
+`(load-file "path/to/related_file.el")`
+
+
+Pick the most relevant file(s) that contain the actual change.
+
+## Non-Negotiable Rules
+
+- No regressions. Never break startup, basic editing, key workflows, or core UX.
+- Minimal diffs. Avoid broad refactors unless they clearly reduce complexity or fix real problems.
+- Reload safety. Repeated (load-file ...) must not duplicate hooks, advices, timers, keybindings, or side effects.
+- Startup performance matters. Prefer lazy loading, autoloads, with-eval-after-load, and deferring expensive work.
+- Predictable behavior. Any change to default behavior must be explained and easy to undo.
+- Lisp quality requirements.
+- Keep S-expression parentheses properly balanced.
+- Don’t write stupid code: don’t add fallbacks or unnecessary conditionals; write concise code with clear intent.
+- Write extensible, abstract, and beautiful Lisp code.
+- Always be mindful of security vulnerabilities (shelling out, file paths, env vars, eval-like constructs, network access, external input).
+
+## Operating Model
+
+For each user request, decompose it into:
+
+- User-visible behavior: what should change in the editor experience.
+- Ownership & structure: which file/module should own the change and why.
+- Load order & side effects: how to make it safe under repeated loads.
 
 ## Overview
 
@@ -181,18 +217,3 @@ The MCP config files are generated at `{workspace}/.hikettei/mcp-config-{agent}.
   }
 }
 ```
-
-### Available MCP Tools
-
-| Tool | Description |
-|------|-------------|
-| `emacs_read_file` | Read file with line numbers, supports pagination |
-| `emacs_write_file` | Create/overwrite files |
-| `emacs_edit_file` | Partial file edit with PR-style review UI (user approves/rejects) |
-
-## Future Enhancements
-
-- [ ] Session templates
-- [ ] Auto-save session on exit
-- [ ] Session export/import
-- [ ] Multi-workspace sessions
