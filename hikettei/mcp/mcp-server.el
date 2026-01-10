@@ -271,10 +271,41 @@ Returns formatted response string."
         (format "%S" (eval (read code) t)))
     (error (format "Error: %s" (error-message-string err)))))
 
+(defun mcp-server--tool-screenshot (_args)
+  "Take screenshot and save to workspace/.hikettei/screen_shots/"
+  (let* ((workspace (or mcp-server--project-root default-directory))
+         (shots-dir (expand-file-name ".hikettei/screen_shots" workspace))
+         (timestamp (format-time-string "%Y%m%d-%H%M%S"))
+         (filename (format "screenshot-%s.png" timestamp))
+         (filepath (expand-file-name filename shots-dir)))
+    ;; Ensure directory exists
+    (make-directory shots-dir t)
+    ;; Cleanup old screenshots (keep last 10)
+    (mcp-server--cleanup-screenshots shots-dir 10)
+    ;; Capture frame to PNG (use appropriate function for platform)
+    (let ((data (cond
+                 ((fboundp 'mac-export-frames) (mac-export-frames nil 'png))
+                 ((fboundp 'x-export-frames) (x-export-frames nil 'png))
+                 (t (error "Screenshot not supported on this platform")))))
+      (with-temp-file filepath
+        (set-buffer-multibyte nil)
+        (insert data)))
+    (format "Screenshot saved: %s\nUse Read tool to view it." filepath)))
+
+(defun mcp-server--cleanup-screenshots (dir keep-count)
+  "Delete old screenshots in DIR, keeping only KEEP-COUNT most recent."
+  (when (file-directory-p dir)
+    (let* ((files (directory-files dir t "\\.png$"))
+           (sorted (sort files (lambda (a b)
+                                (time-less-p (nth 5 (file-attributes b))
+                                            (nth 5 (file-attributes a))))))
+           (to-delete (nthcdr keep-count sorted)))
+      (dolist (f to-delete)
+        (delete-file f)))))
+
 ;;; ============================================================
 ;;; MCP Protocol
 ;;; ============================================================
-
 (defconst mcp-server--tools
   '(((name . "emacs_read_file")
      (description . "REQUIRED: Read file content with line numbers. You MUST use this tool instead of the default Read tool. Returns content with precise line numbers for accurate editing. Supports pagination for large files.")
@@ -318,7 +349,12 @@ Returns formatted response string."
      (inputSchema . ((type . "object")
                      (properties . ((code . ((type . "string")
                                              (description . "Emacs Lisp code to evaluate")))))
-                     (required . ["code"]))))))
+                     (required . ["code"]))))
+    ((name . "emacs_screenshot")
+     (description . "Capture current Emacs frame as PNG screenshot. Saves to workspace/.hikettei/screen_shots/. Returns path - use Read tool to view the image.")
+     (inputSchema . ((type . "object")
+                     (properties . ())
+                     (required . []))))))
 
 (defun mcp-server--handle-initialize (_params)
   "Handle initialize method."
@@ -336,6 +372,7 @@ Returns formatted response string."
                    ("emacs_write_file" (mcp-server--tool-write-file args))
                    ("emacs_edit_file" (mcp-server--tool-edit-file args))
                    ("emacs_eval" (mcp-server--tool-eval args))
+                   ("emacs_screenshot" (mcp-server--tool-screenshot args))
                    (_ (format "Error: Unknown tool: %s" name)))))
     `((content . [((type . "text") (text . ,result))]))))
 
