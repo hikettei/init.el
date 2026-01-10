@@ -636,6 +636,12 @@ Arguments:
   CALLBACK   - Optional function to call with result
 
 Returns the session ID."
+  ;; Validate required arguments
+  (unless file (error "file-editor-open: file is required"))
+  (unless (and start-line (integerp start-line))
+    (error "file-editor-open: start-line must be an integer, got %S" start-line))
+  (unless (and end-line (integerp end-line))
+    (error "file-editor-open: end-line must be an integer, got %S" end-line))
   (let* ((id (file-editor--generate-uuid))
          (buf-name (format "*file-review: %s*" (file-name-nondirectory file)))
          (buffer (get-buffer-create buf-name))

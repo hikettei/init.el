@@ -15,6 +15,7 @@
 (include "7eaf.el")             ;; Emacs Application Framework Setup
 ;(include "8claude-code.el")     ;; Claude Code Configurations
 (include "mcp/file-editor.el")  ;; MCP File Editor Review UI
+(include "mcp/mcp-server.el")   ;; MCP HTTP Server for AI Agents
 (include "multi-panel.el")      ;; Multi-Panel WorkArea System
 (include "mcp-session.el")      ;; AI Session Management
 (include "style.el")            ;; Style Configuration

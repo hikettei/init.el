@@ -7,7 +7,10 @@
   },
   "command": {
     "executable": "claude",
-    "args": ["--system-prompt", "IMPORTANT: When editing files, ALWAYS prefer using the emacs_* MCP tools (emacs_read_file, emacs_write_file, emacs_edit_file) instead of the default Read/Write/Edit tools. The emacs tools provide a better user experience with syntax highlighting and PR-style review UI. For partial edits, use emacs_edit_file with a helpful comment explaining the change."],
+    "args": [
+      "--allowedTools", "mcp__emacs-editor__emacs_read_file,mcp__emacs-editor__emacs_write_file,mcp__emacs-editor__emacs_edit_file",
+      "--system-prompt", "CRITICAL REQUIREMENT: You MUST use emacs_* MCP tools for ALL file operations. DO NOT use default Read/Write/Edit tools. Use emacs_read_file to read files, emacs_write_file to create/overwrite files, emacs_edit_file for partial edits. This is MANDATORY - the user's Emacs environment requires these tools for proper integration."
+    ],
     "resume_args": ["--resume"],
     "mcp_config_flag": "--mcp-config"
   },

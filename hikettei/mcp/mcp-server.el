@@ -13,10 +13,7 @@
 ;; Tools (prefixed with emacs_ to encourage AI agents to prefer them):
 ;;   - emacs_read_file: Read file with line numbers
 ;;   - emacs_write_file: Create/overwrite files
-;;   - emacs_edit_file: Partial file edit with diff review UI
-;;   - emacs_approve_edit: Apply staged edit
-;;   - emacs_reject_edit: Discard staged edit
-;;   - emacs_delete_file: Delete file or directory
+;;   - emacs_edit_file: Partial file edit with diff review UI (user approves/rejects)
 ;;
 ;; Dependencies:
 ;;   - web-server: HTTP server (installed via 0package-manager.el)
@@ -35,8 +32,8 @@
 (require 'url-parse)
 (require 'web-server)
 
-;; File editor for review UI
-(require 'file-editor)
+;; File editor for review UI (loaded via init.el before this file)
+(declare-function file-editor-open "file-editor")
 
 ;; Declarations for web-server
 (declare-function ws-start "web-server")
@@ -56,10 +53,6 @@
   :group 'tools
   :prefix "mcp-server-")
 
-(defcustom mcp-server-review-timeout 300
-  "Timeout in seconds for review UI response."
-  :type 'integer
-  :group 'mcp-server)
 
 ;;; ============================================================
 ;;; Server State
@@ -74,8 +67,6 @@
 (defvar mcp-server--project-root nil
   "Project root directory for path restriction.")
 
-(defvar mcp-server--result-file nil
-  "Path to the review result file.")
 
 ;;; ============================================================
 ;;; Path Security
@@ -261,54 +252,33 @@ Returns (preview . original-section)."
 ;;; Review UI Integration
 ;;; ============================================================
 
-(defun mcp-server--open-review-ui (file-path start end original new-content comment)
-  "Open Emacs review UI and wait for result.
+(defun mcp-server--open-review-ui-with-callback (file-path start end original new-content comment patch)
+  "Open Emacs review UI with callback to apply PATCH on approval.
 FILE-PATH is the file being edited.
 START and END are line numbers.
 ORIGINAL is the original content.
 NEW-CONTENT is the proposed content.
-COMMENT is optional explanation for reviewer."
-  (when mcp-server--result-file
-    ;; Clear old result
-    (when (file-exists-p mcp-server--result-file)
-      (delete-file mcp-server--result-file))
-    ;; Check if file-editor is available
-    (if (fboundp 'file-editor-open)
-        (progn
-          ;; Set result file path for file-editor
-          (when (boundp 'file-editor-result-file)
-            (setq file-editor-result-file mcp-server--result-file))
-          ;; Open review UI
-          (file-editor-open
-           :file file-path
-           :start-line start
-           :end-line end
-           :original original
-           :new new-content
-           :ai-comment comment)
-          ;; Wait for result
-          (mcp-server--wait-for-review-result))
-      nil)))
-
-(defun mcp-server--wait-for-review-result ()
-  "Wait for review result file with timeout.
-Returns result alist or nil."
-  (let ((start-time (float-time))
-        (timeout mcp-server-review-timeout)
-        (result nil))
-    (while (and (not result)
-                (< (- (float-time) start-time) timeout))
-      (when (file-exists-p mcp-server--result-file)
-        (condition-case nil
-            (let ((content (with-temp-buffer
-                             (insert-file-contents mcp-server--result-file)
-                             (buffer-string))))
-              (setq result (json-read-from-string content))
-              (delete-file mcp-server--result-file))
-          (error nil)))
-      (unless result
-        (sleep-for 0.5)))
-    result))
+COMMENT is optional explanation for reviewer.
+PATCH is the patch object to apply on approval."
+  (when (fboundp 'file-editor-open)
+    (file-editor-open
+     :file file-path
+     :start-line start
+     :end-line end
+     :original original
+     :new new-content
+     :ai-comment comment
+     :callback (lambda (result)
+                 (let ((decision (alist-get 'decision result)))
+                   (if (string= decision "approve")
+                       (progn
+                         (mcp-server--patch-apply patch)
+                         (mcp-server--remove-patch
+                          (cl-loop for id being the hash-keys of mcp-server--patches
+                                   when (eq (gethash id mcp-server--patches) patch)
+                                   return id))
+                         (message "Edit approved and applied: %s" file-path))
+                     (message "Edit rejected: %s" file-path)))))))
 
 ;;; ============================================================
 ;;; MCP Tools Implementation
@@ -349,88 +319,38 @@ Returns result alist or nil."
 
 (defun mcp-server--tool-request-edit (args)
   "Handle request_edit tool with ARGS."
-  (let ((file-path (alist-get 'file_path args))
-        (start-line (alist-get 'start_line args))
-        (end-line (alist-get 'end_line args))
-        (content (alist-get 'content args))
-        (comment (or (alist-get 'comment args) "")))
+  (let* ((file-path (alist-get 'file_path args))
+         (start-line (alist-get 'start_line args))
+         (end-line (alist-get 'end_line args))
+         (content (alist-get 'content args))
+         (comment (or (alist-get 'comment args) "")))
+    ;; Validate required arguments
+    (unless (and file-path start-line end-line content)
+      (error "Missing required arguments: file_path=%s start_line=%s end_line=%s content=%s"
+             file-path start-line end-line (if content "provided" "nil")))
+    (unless (and (integerp start-line) (integerp end-line))
+      (error "start_line and end_line must be integers: start_line=%S end_line=%S"
+             start-line end-line))
     (condition-case err
         (let* ((resolved (mcp-server--resolve-path file-path))
                (patch (mcp-server--create-patch resolved)))
           (if (string= (mcp-server-patch-original-hash patch) "new_file")
-              "Error: File does not exist. Use write_file."
+              "Error: File does not exist. Use emacs_write_file."
             (let* ((stage-result (mcp-server--patch-stage-edit patch start-line end-line content))
                    (preview (car stage-result))
                    (original (cdr stage-result))
-                   (patch-id (mcp-server--register-patch patch))
-                   ;; Try Emacs review UI
-                   (review-result (mcp-server--open-review-ui
-                                   resolved start-line end-line
-                                   original content comment)))
-              (if (null review-result)
-                  ;; Emacs not available or no file-editor
-                  (format "Staged edit. Patch ID: %s\n\n%s\n\nEmacs unavailable. Use approve_edit('%s') or reject_edit('%s')"
-                          patch-id preview patch-id patch-id)
-                ;; Process review result
-                (let* ((decision (or (alist-get 'decision review-result) "request-changes"))
-                       (summary (or (alist-get 'summary review-result) ""))
-                       (comments (alist-get 'line_comments review-result))
-                       (feedback (list (format "Review: %s" (upcase decision)))))
-                  (when (and summary (not (string-empty-p summary)))
-                    (push (format "Summary: %s" summary) feedback))
-                  (dolist (c comments)
-                    (push (format "  Line %s: %s"
-                                  (or (alist-get 'line c) "?")
-                                  (or (alist-get 'comment c) ""))
-                          feedback))
-                  (if (string= decision "approve")
-                      (progn
-                        (mcp-server--patch-apply patch)
-                        (mcp-server--clear-patches)
-                        (format "APPROVED and applied.\n\n%s"
-                                (string-join (nreverse feedback) "\n")))
-                    (format "REJECTED.\n\n%s\n\nPatch %s available for retry."
-                            (string-join (nreverse feedback) "\n")
-                            patch-id)))))))
+                   (patch-id (mcp-server--register-patch patch)))
+              ;; Open review UI with callback to apply patch
+              (mcp-server--open-review-ui-with-callback
+               resolved start-line end-line original content comment patch)
+              ;; Return immediately - review is async
+              (format "Edit staged for review (patch %s). User will approve/reject in Emacs.\n\n%s"
+                      patch-id preview))))
       (mcp-server-path-security-error
        (format "Error: Access denied: %s" file-path))
       (error
-       (format "Error: %s" (error-message-string err))))))
+       (format "Error: %s" (error-message-string err)))))))
 
-(defun mcp-server--tool-approve-edit (args)
-  "Handle approve_edit tool with ARGS."
-  (let ((patch-id (alist-get 'patch_id args)))
-    (let ((patch (mcp-server--get-patch patch-id)))
-      (if (not patch)
-          (format "Error: Invalid patch_id: %s" patch-id)
-        (condition-case err
-            (progn
-              (mcp-server--patch-apply patch)
-              (mcp-server--clear-patches)
-              "Edit applied.")
-          (error
-           (format "Error: %s" (error-message-string err))))))))
-
-(defun mcp-server--tool-reject-edit (args)
-  "Handle reject_edit tool with ARGS."
-  (let ((patch-id (alist-get 'patch_id args)))
-    (mcp-server--remove-patch patch-id)
-    "Edit rejected."))
-
-(defun mcp-server--tool-delete-file (args)
-  "Handle delete_file tool with ARGS."
-  (let ((file-path (alist-get 'file_path args))
-        (recursive (alist-get 'recursive args)))
-    (condition-case err
-        (let ((resolved (mcp-server--resolve-path file-path)))
-          (if recursive
-              (delete-directory resolved t)
-            (delete-file resolved))
-          (format "Deleted: %s" file-path))
-      (mcp-server-path-security-error
-       (format "Error: Access denied: %s" file-path))
-      (error
-       (format "Error: %s" (error-message-string err))))))
 
 ;;; ============================================================
 ;;; MCP Protocol
@@ -438,7 +358,7 @@ Returns result alist or nil."
 
 (defconst mcp-server--tools
   '(((name . "emacs_read_file")
-     (description . "PREFERRED: Read file content with line numbers displayed in Emacs. Use this instead of the default Read tool. Returns content with syntax highlighting context and precise line numbers for accurate editing. Supports pagination for large files.")
+     (description . "REQUIRED: Read file content with line numbers. You MUST use this tool instead of the default Read tool. Returns content with precise line numbers for accurate editing. Supports pagination for large files.")
      (inputSchema . ((type . "object")
                      (properties . ((file_path . ((type . "string")
                                                   (description . "File path (relative to project root)")))
@@ -450,7 +370,7 @@ Returns result alist or nil."
                                               (default . 3000)))))
                      (required . ["file_path"]))))
     ((name . "emacs_write_file")
-     (description . "PREFERRED: Create or overwrite file through Emacs. Use this instead of the default Write tool. The file is opened in Emacs buffer for the user to see. Use supersede=true to overwrite existing files.")
+     (description . "REQUIRED: Create or overwrite file. You MUST use this tool instead of the default Write tool. Use supersede=true to overwrite existing files.")
      (inputSchema . ((type . "object")
                      (properties . ((file_path . ((type . "string")
                                                   (description . "File path to create/write")))
@@ -461,7 +381,7 @@ Returns result alist or nil."
                                                   (default . :json-false)))))
                      (required . ["file_path" "content"]))))
     ((name . "emacs_edit_file")
-     (description . "PREFERRED: Request partial file edit with GitHub PR-style review UI. Use this instead of the default Edit tool. Opens a diff view in Emacs showing removed/added lines with syntax highlighting. The user can approve, reject, or add line comments. Always include a helpful comment explaining the change.")
+     (description . "REQUIRED: Partial file edit with PR-style review. You MUST use this tool instead of the default Edit tool. Opens diff view for user approval. Always include a comment explaining the change.")
      (inputSchema . ((type . "object")
                      (properties . ((file_path . ((type . "string")
                                                   (description . "File path to edit")))
@@ -472,30 +392,9 @@ Returns result alist or nil."
                                     (content . ((type . "string")
                                                 (description . "New content to replace the specified line range")))
                                     (comment . ((type . "string")
-                                                (description . "Explanation of the change for the reviewer (required for good UX)")))))))
-                     (required . ["file_path" "start_line" "end_line" "content" "comment"])))
-    ((name . "emacs_approve_edit")
-     (description . "Apply a staged edit by its patch_id. Use this after emacs_edit_file if the edit was not auto-approved.")
-     (inputSchema . ((type . "object")
-                     (properties . ((patch_id . ((type . "string")
-                                                 (description . "Patch ID returned from emacs_edit_file")))))
-                     (required . ["patch_id"]))))
-    ((name . "emacs_reject_edit")
-     (description . "Discard a staged edit. Use this if you want to abandon a pending edit.")
-     (inputSchema . ((type . "object")
-                     (properties . ((patch_id . ((type . "string")
-                                                 (description . "Patch ID to reject")))))
-                     (required . ["patch_id"]))))
-    ((name . "emacs_delete_file")
-     (description . "Delete file or directory through Emacs. Use recursive=true for directories.")
-     (inputSchema . ((type . "object")
-                     (properties . ((file_path . ((type . "string")
-                                                  (description . "Path to delete")))
-                                    (recursive . ((type . "boolean")
-                                                  (description . "Set true for recursive directory deletion")
-                                                  (default . :json-false)))))
-                     (required . ["file_path"])))))
-  "List of MCP tools with descriptions that encourage AI agents to prefer them.")
+                                                (description . "Explanation of the change for the reviewer")))))
+                     (required . ["file_path" "start_line" "end_line" "content" "comment"])))))
+  "List of MCP tools - these are REQUIRED for all file operations.")
 
 (defun mcp-server--handle-initialize (_params)
   "Handle the initialize method."
@@ -517,9 +416,6 @@ Returns result alist or nil."
                    ("emacs_read_file" (mcp-server--tool-read-file tool-args))
                    ("emacs_write_file" (mcp-server--tool-write-file tool-args))
                    ("emacs_edit_file" (mcp-server--tool-request-edit tool-args))
-                   ("emacs_approve_edit" (mcp-server--tool-approve-edit tool-args))
-                   ("emacs_reject_edit" (mcp-server--tool-reject-edit tool-args))
-                   ("emacs_delete_file" (mcp-server--tool-delete-file tool-args))
                    (_ (format "Error: Unknown tool: %s" tool-name)))))
     `((content . [((type . "text")
                    (text . ,result))]))))
@@ -530,9 +426,11 @@ METHOD is the JSON-RPC method name.
 PARAMS is the parameters alist."
   (pcase method
     ("initialize" (mcp-server--handle-initialize params))
+    ("notifications/initialized" nil)  ; MCP notification, no response needed
     ("tools/list" (mcp-server--handle-tools-list params))
     ("tools/call" (mcp-server--handle-tools-call params))
-    (_ (signal 'json-rpc-error (list -32601 "Method not found")))))
+    (_ `((content . [((type . "text")
+                      (text . ,(format "Error: Unknown method: %s" method)))])))))
 
 ;;; ============================================================
 ;;; HTTP Server
@@ -540,32 +438,40 @@ PARAMS is the parameters alist."
 
 (defun mcp-server--handle-post (request)
   "Handle POST request to /mcp endpoint."
-  (condition-case err
-      (let* ((body (ws-body request))
-             (json-object (json-parse-string body :object-type 'alist))
-             (method (alist-get 'method json-object))
-             (params (alist-get 'params json-object))
-             (id (alist-get 'id json-object)))
-        ;; Check if this is a notification (no id field)
-        (if (null id)
-            (mcp-server--send-empty-response request)
-          ;; Process request
-          (let ((result (mcp-server--dispatch method params)))
-            (mcp-server--send-json-response
-             request 200
-             `((jsonrpc . "2.0")
-               (id . ,id)
-               (result . ,result))))))
-    (json-parse-error
-     (mcp-server--send-json-error request nil -32700 "Parse error"))
-    (error
-     (mcp-server--send-json-error
-      request nil -32603
-      (format "Internal error: %s" (error-message-string err))))))
+  (let ((request-id nil))
+    (condition-case err
+        (let* ((body (ws-body request))
+               (json-object (json-parse-string body :object-type 'alist))
+               (method (alist-get 'method json-object))
+               (params (alist-get 'params json-object))
+               (id (alist-get 'id json-object)))
+          (setq request-id id)
+          (if (null id)
+              (mcp-server--send-empty-response request)
+            (let ((result (mcp-server--dispatch method params)))
+              (if (null result)
+                  (mcp-server--send-empty-response request)
+                (mcp-server--send-json-response
+                 request 200
+                 `((jsonrpc . "2.0")
+                   (id . ,id)
+                   (result . ,result)))))))
+      (json-parse-error
+       (mcp-server--send-json-response
+        request 200
+        `((jsonrpc . "2.0")
+          (id . ,(or request-id "error"))
+          (result . ((content . [((type . "text") (text . "Error: Invalid JSON"))]))))))
+      (error
+       (mcp-server--send-json-response
+        request 200
+        `((jsonrpc . "2.0")
+          (id . ,(or request-id "error"))
+          (result . ((content . [((type . "text") (text . ,(format "Error: %s" (error-message-string err))))])))))))))
 
 (defun mcp-server--send-json-response (request status body)
   "Send JSON response to REQUEST with STATUS and BODY."
-  (let ((process (slot-value request 'process)))
+  (let ((process (ws-process request)))
     (ws-response-header process status
                         '("Content-Type" . "application/json")
                         '("Access-Control-Allow-Origin" . "*"))
@@ -574,20 +480,12 @@ PARAMS is the parameters alist."
 
 (defun mcp-server--send-empty-response (request)
   "Send empty HTTP 200 response for notifications."
-  (let ((process (slot-value request 'process)))
+  (let ((process (ws-process request)))
     (ws-response-header process 200
                         '("Content-Type" . "text/plain")
                         '("Content-Length" . "0"))
     (throw 'close-connection nil)))
 
-(defun mcp-server--send-json-error (request id code message)
-  "Send JSON-RPC error response."
-  (mcp-server--send-json-response
-   request 200
-   `((jsonrpc . "2.0")
-     (id . ,id)
-     (error . ((code . ,code)
-               (message . ,message))))))
 
 ;;; ============================================================
 ;;; Public API
@@ -605,9 +503,6 @@ Returns (server . port) cons cell."
     (mcp-server-stop))
   ;; Setup configuration
   (setq mcp-server--project-root (file-truename (expand-file-name project-root)))
-  (let ((root-hash (substring (secure-hash 'md5 mcp-server--project-root) 0 8)))
-    (setq mcp-server--result-file
-          (format "/tmp/emacs-file-editor-%s.json" root-hash)))
   ;; Reset patch state
   (mcp-server--clear-patches)
   (setq mcp-server--patch-counter 0)

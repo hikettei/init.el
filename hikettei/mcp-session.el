@@ -444,18 +444,20 @@ Includes MCP config flag based on the agent type."
                  (plist-get config :args)))
          (session-id (ai-session-session-id session))
          (mcp-config-file (ai-session-mcp-config-file session))
-         (mcp-args (ai-session--get-mcp-config-flag config mcp-config-file)))
+         (mcp-args (ai-session--get-mcp-config-flag config mcp-config-file))
+         ;; Shell-quote each arg to handle spaces in values (e.g., system prompts)
+         (quoted-args (mapconcat #'shell-quote-argument args " ")))
     (string-trim
      (if resume
          (format "%s %s %s %s"
                  executable
                  (or mcp-args "")
-                 (mapconcat #'identity args " ")
+                 quoted-args
                  (or session-id ""))
        (format "%s %s %s"
                executable
                (or mcp-args "")
-               (mapconcat #'identity args " "))))))
+               quoted-args)))))
 
 (defun ai-session--setup-layout (session &optional resume)
   "Setup layout for SESSION. Delegates to multi-panel if available."
