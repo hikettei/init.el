@@ -52,22 +52,44 @@
 (defvar mcp-browser--js-result nil
   "Temporary storage for JavaScript execution result.")
 
+(defvar mcp-browser--js-error nil
+  "Temporary storage for JavaScript execution error.")
 
 (defun mcp-browser--execute-js-sync (xw script &optional timeout)
   "Execute SCRIPT in xwidget XW synchronously and return result.
-TIMEOUT is max wait time in seconds (default 5)."
+TIMEOUT is max wait time in seconds (default 5).
+Returns result string or nil on error."
   (setq mcp-browser--js-result nil)
+  (setq mcp-browser--js-error nil)
   (let ((timeout (or timeout 5))
         (start (float-time)))
-    (xwidget-webkit-execute-script xw script
-      (lambda (result) (setq mcp-browser--js-result result)))
-    ;; Wait for result with timeout - use sit-for and redisplay to stay responsive
+    (condition-case err
+        (xwidget-webkit-execute-script xw script
+          (lambda (result)
+            (setq mcp-browser--js-result (or result "undefined"))))
+      (error
+       (setq mcp-browser--js-error (error-message-string err))
+       (setq mcp-browser--js-result "undefined")))
+    ;; Wait for result with timeout
     (while (and (null mcp-browser--js-result)
+                (null mcp-browser--js-error)
                 (< (- (float-time) start) timeout))
       (redisplay t)
-      (sit-for 0.05 t))  ;; t = no redisplay (we did it manually)
-    (or mcp-browser--js-result "undefined")))
+      (sit-for 0.05 t))
+    ;; Return result or error indication
+    (cond
+     (mcp-browser--js-error
+      (format "[JS Error: %s]" mcp-browser--js-error))
+     (mcp-browser--js-result
+      mcp-browser--js-result)
+     (t "undefined"))))
 
+(defun mcp-browser--safe-execute-js (xw script)
+  "Execute SCRIPT in XW with JavaScript-side error handling.
+Wraps script in try-catch and returns result or error message."
+  (let ((wrapped-script
+         (format "try { %s } catch(e) { '[JS Error: ' + e.message + ']' }" script)))
+    (mcp-browser--execute-js-sync xw wrapped-script)))
 (defun mcp-browser--escape-js-string (str)
   "Escape STR for use in JavaScript string literal."
   (replace-regexp-in-string
@@ -116,7 +138,7 @@ TIMEOUT is max wait time in seconds (default 5)."
   "Go back in history using JavaScript."
   (condition-case err
       (let ((xw (mcp-browser--get-webkit)))
-        (xwidget-webkit-execute-script xw "window.history.back()")
+        (mcp-browser--safe-execute-js xw "window.history.back()")
         "Navigated back")
     (error (format "Error: %s" (error-message-string err)))))
 
@@ -124,7 +146,7 @@ TIMEOUT is max wait time in seconds (default 5)."
   "Go forward in history using JavaScript."
   (condition-case err
       (let ((xw (mcp-browser--get-webkit)))
-        (xwidget-webkit-execute-script xw "window.history.forward()")
+        (mcp-browser--safe-execute-js xw "window.history.forward()")
         "Navigated forward")
     (error (format "Error: %s" (error-message-string err)))))
 
@@ -132,11 +154,10 @@ TIMEOUT is max wait time in seconds (default 5)."
   "Reload current page."
   (condition-case err
       (progn
-        (mcp-browser--get-webkit) ;; Ensure webkit exists
+        (mcp-browser--get-webkit)
         (xwidget-webkit-reload)
         "Page reloaded")
     (error (format "Error: %s" (error-message-string err)))))
-
 
 (defun mcp-browser--tool-get-state (_args)
   "Get browser state."
@@ -154,9 +175,9 @@ TIMEOUT is max wait time in seconds (default 5)."
              (selector (or (cdr (assoc 'selector args)) "body"))
              (format-type (or (cdr (assoc 'format args)) "text"))
              (prop (if (string= format-type "html") "innerHTML" "innerText"))
-             (script (format "document.querySelector('%s')?.%s || ''"
+             (script (format "(function() { var el = document.querySelector('%s'); return el ? el.%s : ''; })()"
                              (mcp-browser--escape-js-string selector) prop))
-             (result (mcp-browser--execute-js-sync xw script)))
+             (result (mcp-browser--safe-execute-js xw script)))
         (or result ""))
     (error (format "Error: %s" (error-message-string err)))))
 
@@ -164,8 +185,8 @@ TIMEOUT is max wait time in seconds (default 5)."
   "Get all links on page."
   (condition-case err
       (let* ((xw (mcp-browser--get-webkit))
-             (script "JSON.stringify(Array.from(document.querySelectorAll('a[href]')).map(a => ({text: a.innerText.trim().substring(0, 100), href: a.href})).filter(l => l.text && l.href).slice(0, 100))")
-             (result (mcp-browser--execute-js-sync xw script)))
+             (script "(function() { return JSON.stringify(Array.from(document.querySelectorAll('a[href]')).map(a => ({text: a.innerText.trim().substring(0, 100), href: a.href})).filter(l => l.text && l.href).slice(0, 100)); })()")
+             (result (mcp-browser--safe-execute-js xw script)))
         (or result "[]"))
     (error (format "Error: %s" (error-message-string err)))))
 
@@ -175,10 +196,12 @@ TIMEOUT is max wait time in seconds (default 5)."
       (let* ((xw (mcp-browser--get-webkit))
              (selector (cdr (assoc 'selector args))))
         (unless selector (error "Missing required parameter: selector"))
-        (let ((script (format "document.querySelector('%s')?.click()"
-                              (mcp-browser--escape-js-string selector))))
-          (xwidget-webkit-execute-script xw script)
-          (format "Clicked: %s" selector)))
+        (let* ((script (format "(function() { var el = document.querySelector('%s'); if(el) { el.click(); return 'clicked'; } return 'element not found'; })()"
+                               (mcp-browser--escape-js-string selector)))
+               (result (mcp-browser--safe-execute-js xw script)))
+          (if (and result (string-match-p "^\\[JS Error" result))
+              result
+            (format "Clicked: %s (%s)" selector (or result "done")))))
     (error (format "Error: %s" (error-message-string err)))))
 
 (defun mcp-browser--tool-type (args)
@@ -189,11 +212,13 @@ TIMEOUT is max wait time in seconds (default 5)."
              (text (cdr (assoc 'text args))))
         (unless selector (error "Missing required parameter: selector"))
         (unless text (error "Missing required parameter: text"))
-        (let ((script (format "const el = document.querySelector('%s'); if(el){el.value = '%s'; el.dispatchEvent(new Event('input', {bubbles:true})); el.dispatchEvent(new Event('change', {bubbles:true}));}"
-                              (mcp-browser--escape-js-string selector)
-                              (mcp-browser--escape-js-string text))))
-          (xwidget-webkit-execute-script xw script)
-          (format "Typed into %s: %s" selector text)))
+        (let* ((script (format "(function() { var el = document.querySelector('%s'); if(el) { el.value = '%s'; el.dispatchEvent(new Event('input', {bubbles:true})); el.dispatchEvent(new Event('change', {bubbles:true})); return 'typed'; } return 'element not found'; })()"
+                               (mcp-browser--escape-js-string selector)
+                               (mcp-browser--escape-js-string text)))
+               (result (mcp-browser--safe-execute-js xw script)))
+          (if (and result (string-match-p "^\\[JS Error" result))
+              result
+            (format "Typed into %s: %s" selector text))))
     (error (format "Error: %s" (error-message-string err)))))
 
 (defun mcp-browser--tool-scroll (args)
@@ -205,17 +230,17 @@ TIMEOUT is max wait time in seconds (default 5)."
         (unless direction (error "Missing required parameter: direction"))
         (let* ((delta (if (string= direction "up") (- amount) amount))
                (script (format "window.scrollBy(0, %d)" delta)))
-          (xwidget-webkit-execute-script xw script)
+          (mcp-browser--safe-execute-js xw script)
           (format "Scrolled %s by %d pixels" direction amount)))
     (error (format "Error: %s" (error-message-string err)))))
 
 (defun mcp-browser--tool-execute-js (args)
-  "Execute arbitrary JavaScript."
+  "Execute arbitrary JavaScript with error handling."
   (condition-case err
       (let* ((xw (mcp-browser--get-webkit))
              (script (cdr (assoc 'script args))))
         (unless script (error "Missing required parameter: script"))
-        (let ((result (mcp-browser--execute-js-sync xw script)))
+        (let ((result (mcp-browser--safe-execute-js xw script)))
           (or result "undefined")))
     (error (format "Error: %s" (error-message-string err)))))
 
@@ -239,20 +264,24 @@ TIMEOUT is max wait time in seconds (default 5)."
              (timeout (or (cdr (assoc 'timeout args)) 10)))
         (unless selector (error "Missing required parameter: selector"))
         (let ((start (float-time))
-              (found nil))
+              (found nil)
+              (last-error nil))
           (while (and (not found) (< (- (float-time) start) timeout))
-            (let ((result (mcp-browser--execute-js-sync xw
-                            (format "document.querySelector('%s') !== null"
-                                    (mcp-browser--escape-js-string selector)) 1)))
-              (if (string= result "true")
-                  (setq found t)
-                ;; Use sit-for instead of sleep-for to allow Emacs to process events
-                (sit-for 0.5))))
-          (if found
-              (format "Element found: %s" selector)
-            (format "Timeout after %ds waiting for: %s" timeout selector))))
+            (let ((result (mcp-browser--safe-execute-js xw
+                            (format "(function() { return document.querySelector('%s') !== null; })()"
+                                    (mcp-browser--escape-js-string selector)))))
+              (cond
+               ((string-match-p "^\\[JS Error" (or result ""))
+                (setq last-error result))
+               ((string= result "true")
+                (setq found t))
+               (t
+                (sit-for 0.5)))))
+          (cond
+           (found (format "Element found: %s" selector))
+           (last-error (format "Error while waiting: %s" last-error))
+           (t (format "Timeout after %ds waiting for: %s" timeout selector)))))
     (error (format "Error: %s" (error-message-string err)))))
-
 ;;; ============================================================
 ;;; Tool Definitions
 ;;; ============================================================
