@@ -302,6 +302,11 @@
   ;; Update tab bar to show new mode
   (when (fboundp 'mp--update-feat-tab-bar)
     (mp--update-feat-tab-bar))
+  ;; Refresh Autopilot panel if it's active
+  (when (and (boundp 'mp--current-feat-tab)
+             (eq mp--current-feat-tab 'autopilot)
+             (fboundp 'mp--setup-autopilot))
+    (mp--setup-autopilot nil))
   (message "Voicebox mode: %s" (mcp-voicebox--mode-display-name mcp-voicebox-mode)))
 
 (defun mcp-voicebox--mode-display-name (mode)
