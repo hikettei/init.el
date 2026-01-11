@@ -261,6 +261,37 @@ browser_wait(selector="#search")
 browser_get_content(selector="#search", format="text")
 ```
 
+
+#### Panel Tools
+
+Control the multi-panel layout from AI agents.
+
+| Tool | Description |
+|------|-------------|
+| `emacs_list_panels` | List all available panels and show current panel |
+| `emacs_switch_panel` | Switch to a different panel |
+
+**Available Panels:**
+- `autopilot` - AI file edit review mode
+- `discussion` - ChatGPT in browser
+- `explore` - Google/web browser
+- `freeform` - Scratchpad
+- `git` - Git operations
+- `hikettei` - Custom panel
+- `memory` - Memory panel
+- `monitor` - System monitor
+- `terminal` - vterm shell
+
+**Example: Switch panels**
+```
+emacs_list_panels()
+→ Shows: autopilot, discussion, explore, terminal, ...
+   Current panel: autopilot
+
+emacs_switch_panel(panel="explore")
+→ Switches to Explore panel (web browser)
+```
+
 ### Review Modes
 
 The Autopilot panel supports 4 review modes for AI file edits. Switch modes with `C-x j m`.
