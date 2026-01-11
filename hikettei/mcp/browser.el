@@ -245,11 +245,12 @@ TIMEOUT is max wait time in seconds (default 5)."
 ;;; ============================================================
 
 (defconst mcp-browser--tools
-  '(((name . "browser_open")
+  `(((name . "browser_open")
      (description . "Open the browser by switching to the Explore panel. Call this first if browser is not active. Optionally navigate to a URL.")
      (inputSchema . ((type . "object")
                      (properties . ((url . ((type . "string")
-                                            (description . "Optional URL to navigate to after opening"))))))))
+                                            (description . "Optional URL to navigate to after opening")))))
+                     (required . []))))
 
     ((name . "browser_navigate")
      (description . "Navigate the WebKit browser to a URL. Requires browser to be open first.")
@@ -261,22 +262,26 @@ TIMEOUT is max wait time in seconds (default 5)."
     ((name . "browser_back")
      (description . "Go back to previous page in browser history")
      (inputSchema . ((type . "object")
-                     (properties . ()))))
+                     (properties . ,(make-hash-table :test 'equal))
+                     (required . []))))
 
     ((name . "browser_forward")
      (description . "Go forward to next page in browser history")
      (inputSchema . ((type . "object")
-                     (properties . ()))))
+                     (properties . ,(make-hash-table :test 'equal))
+                     (required . []))))
 
     ((name . "browser_reload")
      (description . "Reload current page")
      (inputSchema . ((type . "object")
-                     (properties . ()))))
+                     (properties . ,(make-hash-table :test 'equal))
+                     (required . []))))
 
     ((name . "browser_get_state")
      (description . "Get current browser state including URL and page title")
      (inputSchema . ((type . "object")
-                     (properties . ()))))
+                     (properties . ,(make-hash-table :test 'equal))
+                     (required . []))))
 
     ((name . "browser_get_content")
      (description . "Get page content as text or HTML. Use selector to target specific elements.")
@@ -285,12 +290,14 @@ TIMEOUT is max wait time in seconds (default 5)."
                                                  (description . "CSS selector (default: body)")))
                                     (format . ((type . "string")
                                                (enum . ("text" "html"))
-                                               (description . "Output format: text or html (default: text)"))))))))
+                                               (description . "Output format: text or html (default: text)")))))
+                     (required . []))))
 
     ((name . "browser_get_links")
      (description . "Get all links on the page as JSON array with text and href properties")
      (inputSchema . ((type . "object")
-                     (properties . ()))))
+                     (properties . ,(make-hash-table :test 'equal))
+                     (required . []))))
 
     ((name . "browser_click")
      (description . "Click an element by CSS selector")
@@ -328,7 +335,8 @@ TIMEOUT is max wait time in seconds (default 5)."
     ((name . "browser_screenshot")
      (description . "Take a screenshot of the current Emacs frame including the browser. Returns the file path.")
      (inputSchema . ((type . "object")
-                     (properties . ()))))
+                     (properties . ,(make-hash-table :test 'equal))
+                     (required . []))))
 
     ((name . "browser_wait")
      (description . "Wait for an element to appear on the page. Polls every 0.5 seconds until found or timeout.")
