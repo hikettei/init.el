@@ -1,6 +1,6 @@
 # hikettei/init.el
 
-A modern Emacs configuration for AI-assisted development with multi-agent support (Claude, Gemini, Codex).
+A modern Emacs configuration for AI-assisted development with multi-agent support (Claude, Gemini, Codex). Features MCP server integration, session management, and multi-panel workflow UI.
 
 ```
     +------------------------------------------------------------------+
@@ -188,6 +188,109 @@ Model Context Protocol integration for AI-Emacs communication.
 - Line-by-line commenting
 - Approve / Request Changes workflow
 - Integration with AI edit suggestions
+
+### MCP Tools
+
+The MCP server (`hikettei/mcp/mcp-server.el`) provides tools that AI agents can use to interact with Emacs.
+
+#### File Editor Tools
+
+| Tool | Description |
+|------|-------------|
+| `emacs_read_file` | Read file with line numbers (use instead of default Read) |
+| `emacs_write_file` | Create or overwrite files (use instead of default Write) |
+| `emacs_edit_file` | Partial file edit with PR-style diff review |
+| `emacs_eval` | Evaluate arbitrary Emacs Lisp code |
+| `emacs_screenshot` | Capture Emacs frame as PNG |
+| `emacs_get_pending_review` | Get current pending edit review data |
+
+#### Memory Tools
+
+Persistent memory system for AI agents. Data stored in `{workspace}/.hikettei/memory/`.
+
+| Tool | Description |
+|------|-------------|
+| `memory_note` | Create/update markdown notes with tags |
+| `memory_store` | Store external content (webpage, github, arxiv, pdf) |
+| `memory_search` | Search memories by keyword, type, or tags |
+| `memory_get` | Retrieve full content by ID |
+| `memory_list` | List all memories with pagination |
+| `memory_delete` | Delete memory by ID |
+
+**Memory Types:**
+- `note` - Markdown memos with YAML front matter
+- `webpage` - Web content converted to markdown
+- `github` - Repository metadata + README (optional: clone repo)
+- `arxiv` - Paper metadata + PDF download
+- `pdf` - Local PDF files
+
+**Example Usage:**
+```
+memory_store(type="github", url="https://github.com/user/repo", clone=true)
+→ Clones repo to .hikettei/memory/repos/user_repo/
+→ AI can then read files from the cloned repository
+```
+
+#### Browser Tools
+
+Control the xwidget-webkit browser in the Explore panel.
+
+| Tool | Description |
+|------|-------------|
+| `browser_open` | Open browser (switch to Explore panel), optionally navigate to URL |
+| `browser_navigate` | Navigate to URL |
+| `browser_back` | Go back in history |
+| `browser_forward` | Go forward in history |
+| `browser_reload` | Reload current page |
+| `browser_get_state` | Get current URL and page title |
+| `browser_get_content` | Get page content as text or HTML |
+| `browser_get_links` | Get all links on page as JSON array |
+| `browser_click` | Click element by CSS selector |
+| `browser_type` | Type text into input element |
+| `browser_scroll` | Scroll page up or down |
+| `browser_execute_js` | Execute arbitrary JavaScript |
+| `browser_screenshot` | Take screenshot of Emacs frame |
+| `browser_wait` | Wait for element to appear (with timeout) |
+
+**Example: Google Search**
+```
+browser_open(url="https://www.google.com")
+browser_type(selector="textarea[name='q']", text="Emacs MCP")
+browser_click(selector="input[type='submit']")
+browser_wait(selector="#search")
+browser_get_content(selector="#search", format="text")
+```
+
+
+#### Panel Tools
+
+Control the multi-panel layout from AI agents.
+
+| Tool | Description |
+|------|-------------|
+| `emacs_list_panels` | List all available panels and show current panel |
+| `emacs_switch_panel` | Switch to a different panel |
+
+**Available Panels:**
+- `autopilot` - AI file edit review mode
+- `discussion` - ChatGPT in browser
+- `explore` - Google/web browser
+- `freeform` - Scratchpad
+- `git` - Git operations
+- `hikettei` - Custom panel
+- `memory` - Memory panel
+- `monitor` - System monitor
+- `terminal` - vterm shell
+
+**Example: Switch panels**
+```
+emacs_list_panels()
+→ Shows: autopilot, discussion, explore, terminal, ...
+   Current panel: autopilot
+
+emacs_switch_panel(panel="explore")
+→ Switches to Explore panel (web browser)
+```
 
 ### Review Modes
 
@@ -408,8 +511,10 @@ AI agent configurations stored as JSON files.
     ├── keybindings.el      # Custom keybindings
     ├── style.el            # UI styling
     ├── mcp/
+    │   ├── mcp-server.el   # MCP HTTP server & tool dispatcher
     │   ├── file-editor.el  # PR-style review UI
-    │   └── mcp_server.py   # Python MCP server
+    │   ├── memory.el       # Persistent memory system
+    │   └── browser.el      # WebKit browser control
     └── panel/
         ├── autopilot.el    # AI autopilot mode
         ├── terminal.el     # Terminal panel

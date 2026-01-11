@@ -26,9 +26,10 @@
 (require 'url-parse)
 (require 'web-server)
 
-;; Load memory module from same directory
+;; Load memory and browser modules from same directory
 (let ((dir (file-name-directory (or load-file-name buffer-file-name))))
-  (load (expand-file-name "memory" dir) nil t))
+  (load (expand-file-name "memory" dir) nil t)
+  (load (expand-file-name "browser" dir) nil t))
 
 (declare-function file-editor-open "file-editor")
 (declare-function ws-start "web-server")
@@ -323,6 +324,42 @@ Returns formatted response string."
                              "manual")))))
     "No pending review"))
 
+(defun mcp-server--tool-switch-panel (args)
+  "Switch to a different panel in the multi-panel layout.
+ARGS should contain 'panel' - the panel ID to switch to."
+  (condition-case err
+      (let ((panel (cdr (assoc 'panel args))))
+        (unless panel (error "Missing required parameter: panel"))
+        (let ((panel-sym (intern panel)))
+          (if (and (fboundp 'mp-switch-to)
+                   (boundp 'mp--feat-tabs)
+                   (gethash panel-sym mp--feat-tabs))
+              (progn
+                (mp-switch-to panel-sym)
+                (format "Switched to panel: %s" panel))
+            (error "Unknown panel: %s. Use emacs_list_panels to see available panels." panel))))
+    (error (format "Error: %s" (error-message-string err)))))
+
+(defun mcp-server--tool-list-panels (_args)
+  "List all available panels in the multi-panel layout."
+  (condition-case err
+      (if (and (fboundp 'mp-switch-to) (boundp 'mp--feat-tabs) (boundp 'mp--feat-tab-order))
+          (let ((panels '()))
+            (dolist (id mp--feat-tab-order)
+              (let ((tab (gethash id mp--feat-tabs)))
+                (when tab
+                  (push (format "- %s: %s (key: %s)"
+                                (symbol-name id)
+                                (mp-feat-tab-name tab)
+                                (mp-feat-tab-key tab))
+                        panels))))
+            (format "Available panels:\n%s\n\nCurrent panel: %s"
+                    (string-join (nreverse panels) "\n")
+                    (if (boundp 'mp--current-feat-tab)
+                        (symbol-name mp--current-feat-tab)
+                      "none")))
+        "Multi-panel system not available")
+    (error (format "Error: %s" (error-message-string err)))))
 ;;; ============================================================
 ;;; MCP Protocol
 ;;; ============================================================
@@ -379,6 +416,17 @@ Returns formatted response string."
      (description . "Get data for the current pending file edit review. Returns JSON with file path, line range, original/new content, AI comment, and current review mode.")
      (inputSchema . ((type . "object")
                      (properties . ,(make-hash-table :test 'equal))
+                     (required . []))))
+    ((name . "emacs_switch_panel")
+     (description . "Switch to a different panel in the Emacs multi-panel layout. Use emacs_list_panels to see available panels.")
+     (inputSchema . ((type . "object")
+                     (properties . ((panel . ((type . "string")
+                                              (description . "Panel ID to switch to (e.g., 'autopilot', 'explore', 'discussion', 'terminal')")))))
+                     (required . ["panel"]))))
+    ((name . "emacs_list_panels")
+     (description . "List all available panels in the Emacs multi-panel layout and show the currently active panel.")
+     (inputSchema . ((type . "object")
+                     (properties . ,(make-hash-table :test 'equal))
                      (required . []))))))
 
 (defun mcp-server--handle-initialize (params)
@@ -408,6 +456,24 @@ Returns formatted response string."
                    ("memory_get" (mcp-memory--tool-get args))
                    ("memory_list" (mcp-memory--tool-list args))
                    ("memory_delete" (mcp-memory--tool-delete args))
+                   ;; Browser tools
+                   ("browser_open" (mcp-browser--tool-open args))
+                   ("browser_navigate" (mcp-browser--tool-navigate args))
+                   ("browser_back" (mcp-browser--tool-back args))
+                   ("browser_forward" (mcp-browser--tool-forward args))
+                   ("browser_reload" (mcp-browser--tool-reload args))
+                   ("browser_get_state" (mcp-browser--tool-get-state args))
+                   ("browser_get_content" (mcp-browser--tool-get-content args))
+                   ("browser_get_links" (mcp-browser--tool-get-links args))
+                   ("browser_click" (mcp-browser--tool-click args))
+                   ("browser_type" (mcp-browser--tool-type args))
+                   ("browser_scroll" (mcp-browser--tool-scroll args))
+                   ("browser_execute_js" (mcp-browser--tool-execute-js args))
+                   ("browser_screenshot" (mcp-browser--tool-screenshot args))
+                   ("browser_wait" (mcp-browser--tool-wait args))
+                   ;; Panel tools
+                   ("emacs_switch_panel" (mcp-server--tool-switch-panel args))
+                   ("emacs_list_panels" (mcp-server--tool-list-panels args))
                    (_ (format "Error: Unknown tool: %s" name)))))
     `((content . [((type . "text") (text . ,result))]))))
 
@@ -416,7 +482,7 @@ Returns formatted response string."
   (pcase method
     ("initialize" (mcp-server--handle-initialize params))
     ("notifications/initialized" nil)
-    ("tools/list" `((tools . ,(vconcat mcp-server--tools mcp-memory--tools))))
+    ("tools/list" `((tools . ,(vconcat mcp-server--tools mcp-memory--tools mcp-browser--tools))))
     ("tools/call" (mcp-server--handle-tools-call params))
     (_ `((content . [((type . "text")
                       (text . ,(format "Error: Unknown method: %s" method)))])))))
