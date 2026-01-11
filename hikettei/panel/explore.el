@@ -20,7 +20,14 @@
      ((fboundp 'eaf-open-browser)
       (eaf-open-browser mp-explore-url))
      ((fboundp 'xwidget-webkit-browse-url)
-      (xwidget-webkit-browse-url mp-explore-url))
+      (xwidget-webkit-browse-url mp-explore-url)
+      ;; Disable line numbers in xwidget buffer
+      (let ((buf (current-buffer)))
+        (run-at-time 0.1 nil
+                     (lambda ()
+                       (when (buffer-live-p buf)
+                         (with-current-buffer buf
+                           (display-line-numbers-mode -1)))))))
      (t
       (browse-url mp-explore-url)))))
 

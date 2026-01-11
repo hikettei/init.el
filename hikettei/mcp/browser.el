@@ -120,8 +120,9 @@ TIMEOUT is max wait time in seconds (default 5)."
 (defun mcp-browser--tool-reload (_args)
   "Reload current page."
   (condition-case err
-      (let ((xw (mcp-browser--get-webkit)))
-        (xwidget-webkit-reload xw)
+      (progn
+        (mcp-browser--get-webkit) ;; Ensure webkit exists
+        (xwidget-webkit-reload)
         "Page reloaded")
     (error (format "Error: %s" (error-message-string err)))))
 
