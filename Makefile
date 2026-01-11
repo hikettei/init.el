@@ -12,13 +12,16 @@ install-all: install-config install-eaf
 	@echo "All installations complete!"
 
 # Copy config files to ~/.emacs.d
+# Copy config files to ~/.emacs.d
 install-config:
 	@mkdir -p $(EMACS_DIR)/hikettei
 	@mkdir -p $(EMACS_DIR)/agents
+	@mkdir -p $(EMACS_DIR)/prompt
 	@mkdir -p $(EMACS_DIR)/site-lisp
 	@cp ./init.el $(EMACS_DIR)/init.el
 	@cp ./agents/*.json $(EMACS_DIR)/agents/
 	@cp -r ./hikettei/ $(EMACS_DIR)/hikettei/
+	@cp -r ./prompt/ $(EMACS_DIR)/prompt/
 	@echo "Config files installed to $(EMACS_DIR)"
 
 # Install Python dependencies for EAF (system-wide)
