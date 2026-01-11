@@ -1,6 +1,6 @@
 # hikettei/init.el
 
-A modern Emacs configuration for AI-assisted development with multi-agent support (Claude, Gemini, Codex).
+A modern Emacs configuration for AI-assisted development with multi-agent support (Claude, Gemini, Codex). Features MCP server integration, session management, and multi-panel workflow UI.
 
 ```
     +------------------------------------------------------------------+

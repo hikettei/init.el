@@ -426,33 +426,40 @@ but excludes NeoTree, AI Chat, and Feat Tab bar."
 
 (defun mp--save-workarea-state (tab)
   "Save the current WorkArea state into TAB.
-Saves buffer list and window layout within the WorkArea."
-  (let ((workarea-wins (mp--workarea-windows)))
-    (when workarea-wins
-      (setf (mp-feat-tab-workarea-state tab)
-            (list :buffers (mapcar (lambda (w)
-                                    (list :buffer (window-buffer w)
-                                          :point (window-point w)
-                                          :start (window-start w)))
-                                  workarea-wins)
-                  :main-buffer (and (window-live-p mp--workarea-window)
-                                   (window-buffer mp--workarea-window)))))))
+Saves complete window layout including splits using `window-state-get'."
+  (when (and mp--workarea-window (window-live-p mp--workarea-window))
+    (let* ((workarea-wins (mp--workarea-windows))
+           (state (when workarea-wins
+                    (list :window-state (window-state-get mp--workarea-window t)
+                          :buffers (mapcar (lambda (w)
+                                            (list :buffer (window-buffer w)
+                                                  :file (buffer-file-name (window-buffer w))
+                                                  :point (window-point w)
+                                                  :start (window-start w)))
+                                          workarea-wins)
+                          :main-buffer (window-buffer mp--workarea-window)))))
+      (setf (mp-feat-tab-workarea-state tab) state))))
 
 (defun mp--restore-workarea-state (tab)
-  "Restore the WorkArea state from TAB."
+  "Restore the WorkArea state from TAB.
+Restores complete window layout including splits using `window-state-put'."
   (let ((state (mp-feat-tab-workarea-state tab)))
     (when (and state (window-live-p mp--workarea-window))
-      ;; First clear extra workarea windows
-      (mp--clear-workarea-windows)
-      ;; Restore main buffer
-      (let ((main-buf (plist-get state :main-buffer)))
-        (when (and main-buf (buffer-live-p main-buf))
-          (set-window-buffer mp--workarea-window main-buf)
-          ;; Restore point from first buffer entry
-          (let ((first-buf-state (car (plist-get state :buffers))))
-            (when first-buf-state
-              (set-window-point mp--workarea-window (plist-get first-buf-state :point))
-              (set-window-start mp--workarea-window (plist-get first-buf-state :start)))))))))
+      (let ((window-state (plist-get state :window-state)))
+        (if window-state
+            ;; Restore complete window configuration
+            (condition-case err
+                (window-state-put window-state mp--workarea-window 'safe)
+              (error
+               ;; Fallback: just restore main buffer
+               (message "Failed to restore window state: %s" err)
+               (let ((main-buf (plist-get state :main-buffer)))
+                 (when (and main-buf (buffer-live-p main-buf))
+                   (set-window-buffer mp--workarea-window main-buf)))))
+          ;; No window-state, try old-style restore
+          (let ((main-buf (plist-get state :main-buffer)))
+            (when (and main-buf (buffer-live-p main-buf))
+              (set-window-buffer mp--workarea-window main-buf))))))))
 
 (defun mp--clear-workarea-windows ()
   "Delete extra windows in WorkArea, keeping only the main one."
@@ -496,13 +503,20 @@ Saves buffer list and window layout within the WorkArea."
 
       (setq mp--current-feat-tab feat-tab-id)
 
-      ;; Clear and setup fresh - always call setup function
-      ;; This ensures panel-specific windows (like autopilot's file window) are created
-      (mp--clear-workarea)
-      (when (window-live-p mp--workarea-window)
-        (select-window mp--workarea-window))
-      (when (mp-feat-tab-setup-fn tab)
-        (funcall (mp-feat-tab-setup-fn tab) session))
+      ;; Check if tab has saved state to restore
+      (let ((saved-state (mp-feat-tab-workarea-state tab)))
+        (if (and saved-state (plist-get saved-state :window-state))
+            ;; Restore saved window state (preserves splits)
+            (progn
+              (mp--restore-workarea-state tab)
+              (when (window-live-p mp--workarea-window)
+                (select-window mp--workarea-window)))
+          ;; No saved state - clear and setup fresh
+          (mp--clear-workarea)
+          (when (window-live-p mp--workarea-window)
+            (select-window mp--workarea-window))
+          (when (mp-feat-tab-setup-fn tab)
+            (funcall (mp-feat-tab-setup-fn tab) session))))
 
       (mp--update-feat-tab-bar)
       (message "Switched to %s" (mp-feat-tab-name tab)))))
