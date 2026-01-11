@@ -94,7 +94,7 @@
 (defvar mp--feat-tab-bar-window nil
   "Window reference for the Feat Tab bar.")
 
-(defvar mp--feat-tab-bar-height 2
+(defvar mp--feat-tab-bar-height 1
   "Height of the Feat Tab bar in lines.")
 
 ;;; ============================================================
@@ -158,6 +158,13 @@ If WINDOW is protected or deletion would leave only protected windows, block it.
 
 (defvar mp--feat-tab-order '()
   "Ordered list of feat tab IDs for display.")
+
+(defcustom mp-feat-tab-preferred-order
+  '(autopilot hikettei terminal git memory explore discussion monitor freeform)
+  "Preferred display order for feat tabs.
+Tabs not in this list will be appended at the end."
+  :type '(repeat symbol)
+  :group 'multi-panel)
 
 (defvar mp--review-pending nil
   "When non-nil, a review is pending in Autopilot.")
@@ -310,48 +317,68 @@ If RESUME is non-nil, resume the agent session."
 ;;; ============================================================
 ;;; Feat Tab Bar
 ;;; ============================================================
+;;; Feat Tab Bar
+;;; ============================================================
+
+(defun mp--sort-feat-tab-order ()
+  "Sort `mp--feat-tab-order' according to `mp-feat-tab-preferred-order'."
+  (let ((preferred mp-feat-tab-preferred-order)
+        (current mp--feat-tab-order))
+    (setq mp--feat-tab-order
+          (append
+           ;; First: tabs in preferred order that exist
+           (cl-remove-if-not (lambda (id) (memq id current)) preferred)
+           ;; Then: remaining tabs not in preferred order
+           (cl-remove-if (lambda (id) (memq id preferred)) current)))))
 
 (defun mp--render-feat-tabs-content ()
-  "Render feat tabs content for the tab bar buffer."
+  "Render feat tabs content for the tab bar buffer.
+Active tab shows full info, inactive tabs show only key."
+  (mp--sort-feat-tab-order)
   (let ((tabs '()))
     ;; Feat Tabs
     (dolist (id mp--feat-tab-order)
       (let* ((tab (gethash id mp--feat-tabs))
              (active (eq id mp--current-feat-tab))
              (face (if active 'mp-feat-tab-active-face 'mp-feat-tab-inactive-face))
-             (icon (mp-feat-tab-icon tab))
-             (name (mp-feat-tab-name tab))
-             (key (mp-feat-tab-key tab))
-             ;; Show 🔴 indicator for autopilot when review pending
-             (indicator (if (and (eq id 'autopilot) mp--review-pending)
-                           "🔴 " ""))
-             ;; Show review mode indicator for autopilot
-             (mode-indicator (if (and (eq id 'autopilot)
-                                      (boundp 'mp-autopilot-review-mode))
-                                (format " [%s]"
-                                        (pcase mp-autopilot-review-mode
-                                          ('manual "M")
-                                          ('hybrid "H")
-                                          ('auto-review "A")
-                                          ('no-review "N")
-                                          (_ "?")))
-                              ""))
-             ;; Show voicebox mode indicator for autopilot
-             (voice-indicator (if (and (eq id 'autopilot)
-                                       (boundp 'mcp-voicebox-mode))
-                                 (format " %s"
-                                         (pcase mcp-voicebox-mode
-                                           ('disabled "🔇")
-                                           ('minimum "🔈")
-                                           ('maximum "🔊")
-                                           (_ "")))
-                               "")))
-        (push (propertize (format " %s%s %s [%s]%s%s " indicator icon name key mode-indicator voice-indicator)
-                          'face face
-                          'mouse-face 'highlight
-                          'keymap (mp--feat-tab-keymap id)
-                          'help-echo (format "Switch to %s (C-x j %s)" name key))
-              tabs)))
+             (key (mp-feat-tab-key tab)))
+        (if active
+            ;; Active tab: full display
+            (let* ((icon (mp-feat-tab-icon tab))
+                   (name (mp-feat-tab-name tab))
+                   (indicator (if (and (eq id 'autopilot) mp--review-pending) "🔴 " ""))
+                   (mode-indicator (if (and (eq id 'autopilot)
+                                            (boundp 'mp-autopilot-review-mode))
+                                       (format " [%s]"
+                                               (pcase mp-autopilot-review-mode
+                                                 ('manual "M")
+                                                 ('hybrid "H")
+                                                 ('auto-review "A")
+                                                 ('no-review "N")
+                                                 (_ "?")))
+                                     ""))
+                   (voice-indicator (if (and (eq id 'autopilot)
+                                             (boundp 'mcp-voicebox-mode))
+                                        (format " %s"
+                                                (pcase mcp-voicebox-mode
+                                                  ('disabled "🔇")
+                                                  ('minimum "🔈")
+                                                  ('maximum "🔊")
+                                                  (_ "")))
+                                      "")))
+              (push (propertize (format " %s%s %s [%s]%s%s " indicator icon name key mode-indicator voice-indicator)
+                                'face face
+                                'mouse-face 'highlight
+                                'keymap (mp--feat-tab-keymap id)
+                                'help-echo (format "Switch to %s (C-x j %s)" name key))
+                    tabs))
+          ;; Inactive tab: abbreviated display (key only)
+          (push (propertize (format " [%s] " key)
+                            'face face
+                            'mouse-face 'highlight
+                            'keymap (mp--feat-tab-keymap id)
+                            'help-echo (format "Switch to %s (C-x j %s)" (mp-feat-tab-name tab) key))
+                tabs))))
     (let ((tabs-str (mapconcat #'identity (nreverse tabs) ""))
           (toggles (mp--render-toggle-buttons)))
       (concat tabs-str "  " toggles))))
