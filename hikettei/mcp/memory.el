@@ -152,7 +152,33 @@
                    memories))
     (mcp-memory--save-index)))
 
+
 ;;; ============================================================
+;;; ID Generation & Utilities
+;;; ============================================================
+
+(defun mcp-memory--ensure-list (val)
+  "Ensure VAL is a list. Convert vector to list if needed."
+  (cond
+   ((null val) nil)
+   ((listp val) val)
+   ((vectorp val) (append val nil))
+   (t (list val))))
+
+(defun mcp-memory--flatten-tags (tags)
+  "Flatten TAGS to a simple list of strings.
+Handles vectors, nested lists, and mixed inputs."
+  (let ((result '()))
+    (dolist (item (mcp-memory--ensure-list tags))
+      (cond
+       ((stringp item) (push item result))
+       ((or (listp item) (vectorp item))
+        (dolist (sub (mcp-memory--ensure-list item))
+          (when (stringp sub)
+            (push sub result))))
+       (t nil)))
+    (nreverse result)))
+
 ;;; ID Generation
 ;;; ============================================================
 
@@ -188,7 +214,7 @@ Returns the memory ID."
          (file-path (format "notes/%s.md" slug))
          (full-path (expand-file-name file-path (mcp-memory--memory-dir)))
          (timestamp (mcp-memory--timestamp))
-         (tags-list (if (listp tags) tags (list tags))))
+         (tags-list (mcp-memory--flatten-tags tags)))
     ;; Handle duplicate slug by appending ID suffix
     (when (file-exists-p full-path)
       (setq slug (format "%s-%s" slug (substring id -6)))
@@ -287,7 +313,7 @@ Returns the memory ID."
          (full-path (expand-file-name file-path (mcp-memory--memory-dir)))
          (timestamp (mcp-memory--timestamp))
          (actual-title (or title (format "Web: %s" (url-host (url-generic-parse-url url)))))
-         (tags-list (if (listp tags) tags (list tags))))
+         (tags-list (mcp-memory--flatten-tags tags)))
     ;; Write content
     (with-temp-file full-path
       (insert (format "<!-- URL: %s -->\n" url))
@@ -329,8 +355,9 @@ Returns the memory ID."
             (json-read-from-string content)
           (error nil))))))
 
-(defun mcp-memory--store-github (url &optional tags)
+(defun mcp-memory--store-github (url &optional tags clone-repo)
   "Store GitHub repository info from URL with optional TAGS.
+If CLONE-REPO is non-nil, also clone the repository.
 Returns the memory ID."
   (mcp-memory--ensure-dirs)
   (let* ((parsed (mcp-memory--parse-github-url url))
@@ -347,9 +374,12 @@ Returns the memory ID."
            (id (mcp-memory--generate-id))
            (file-path (format "github/%s_%s.json" owner repo))
            (full-path (expand-file-name file-path (mcp-memory--memory-dir)))
+           (clone-dir (expand-file-name (format "repos/%s_%s" owner repo) (mcp-memory--memory-dir)))
            (timestamp (mcp-memory--timestamp))
            (title (format "%s/%s" owner repo))
-           (tags-list (if (listp tags) tags (list tags)))
+           (tags-list (mcp-memory--flatten-tags tags))
+           (api-topics (mcp-memory--ensure-list (cdr (assoc 'topics api-data))))
+           (all-tags (append tags-list api-topics))
            (data `((owner . ,owner)
                    (repo . ,repo)
                    (full_name . ,title)
@@ -358,9 +388,16 @@ Returns the memory ID."
                    (stars . ,(cdr (assoc 'stargazers_count api-data)))
                    (forks . ,(cdr (assoc 'forks_count api-data)))
                    (language . ,(cdr (assoc 'language api-data)))
-                   (topics . ,(cdr (assoc 'topics api-data)))
+                   (topics . ,api-topics)
                    (readme . ,readme-content)
+                   (cloned_path . ,(when clone-repo clone-dir))
                    (fetched_at . ,timestamp))))
+      ;; Clone repository if requested
+      (when clone-repo
+        (make-directory (file-name-directory clone-dir) t)
+        (unless (file-directory-p clone-dir)
+          (let ((clone-url (format "https://github.com/%s/%s.git" owner repo)))
+            (call-process "git" nil nil nil "clone" "--depth" "1" clone-url clone-dir))))
       ;; Write JSON data
       (with-temp-file full-path
         (insert (let ((json-encoding-pretty-print t))
@@ -371,10 +408,11 @@ Returns the memory ID."
          (type . "github")
          (title . ,title)
          (url . ,url)
-         (tags . ,(append tags-list (cdr (assoc 'topics api-data))))
+         (tags . ,all-tags)
          (created_at . ,timestamp)
          (updated_at . ,timestamp)
          (file_path . ,file-path)
+         ,@(when clone-repo `((cloned_path . ,clone-dir)))
          (summary . ,(cdr (assoc 'description api-data)))))
       id)))
 
@@ -451,12 +489,14 @@ Downloads PDF and metadata. Returns the memory ID."
            (pdf-url (format "https://arxiv.org/pdf/%s.pdf" arxiv-id))
            (timestamp (mcp-memory--timestamp))
            (title (or (cdr (assoc 'title metadata)) (format "arXiv:%s" arxiv-id)))
-           (tags-list (if (listp tags) tags (list tags)))
+           (tags-list (mcp-memory--flatten-tags tags))
+           (categories (mcp-memory--ensure-list (cdr (assoc 'categories metadata))))
+           (all-tags (append tags-list categories))
            (data `((arxiv_id . ,arxiv-id)
                    (title . ,title)
                    (authors . ,(cdr (assoc 'authors metadata)))
                    (abstract . ,(cdr (assoc 'abstract metadata)))
-                   (categories . ,(cdr (assoc 'categories metadata)))
+                   (categories . ,categories)
                    (published . ,(cdr (assoc 'published metadata)))
                    (pdf_url . ,pdf-url)
                    (fetched_at . ,timestamp))))
@@ -472,7 +512,7 @@ Downloads PDF and metadata. Returns the memory ID."
          (type . "arxiv")
          (title . ,title)
          (url . ,url)
-         (tags . ,(append tags-list (cdr (assoc 'categories metadata))))
+         (tags . ,all-tags)
          (created_at . ,timestamp)
          (updated_at . ,timestamp)
          (file_path . ,json-path)
@@ -498,7 +538,7 @@ Returns the memory ID."
          (json-full (expand-file-name dest-json (mcp-memory--memory-dir)))
          (timestamp (mcp-memory--timestamp))
          (actual-title (or title (file-name-nondirectory file-path)))
-         (tags-list (if (listp tags) tags (list tags)))
+         (tags-list (mcp-memory--flatten-tags tags))
          (data `((original_path . ,file-path)
                  (title . ,actual-title)
                  (stored_at . ,timestamp))))
@@ -534,6 +574,7 @@ Returns the memory ID."
   (let* ((memories (mcp-memory--get-memories))
          (limit (or limit 10))
          (type-filter (and type (not (string= type "all")) type))
+         (tags-list (mcp-memory--ensure-list tags))
          (results '()))
     (dolist (mem memories)
       (when (and
@@ -541,11 +582,11 @@ Returns the memory ID."
              (or (null type-filter)
                  (string= type-filter (cdr (assoc 'type mem))))
              ;; Tags filter (all tags must match)
-             (or (null tags) (= 0 (length tags))
-                 (let ((mem-tags (cdr (assoc 'tags mem))))
+             (or (null tags-list) (= 0 (length tags-list))
+                 (let ((mem-tags (mcp-memory--ensure-list (cdr (assoc 'tags mem)))))
                    (cl-every (lambda (tag)
                                (cl-find tag mem-tags :test #'string=))
-                             tags)))
+                             tags-list)))
              ;; Query filter
              (or (null query) (string-empty-p query)
                  (mcp-memory--matches-query mem query)))
@@ -555,7 +596,7 @@ Returns the memory ID."
 (defun mcp-memory--matches-query (mem query)
   "Check if MEM matches QUERY in title, tags, or summary."
   (let ((title (or (cdr (assoc 'title mem)) ""))
-        (tags (or (cdr (assoc 'tags mem)) '()))
+        (tags (mcp-memory--ensure-list (or (cdr (assoc 'tags mem)) '())))
         (summary (or (cdr (assoc 'summary mem)) ""))
         (query-lower (downcase query)))
     (or (string-match-p (regexp-quote query-lower) (downcase title))
@@ -637,7 +678,7 @@ ARGS: title, content, tags (optional), id (optional for update)."
   (condition-case err
       (let ((title (cdr (assoc 'title args)))
             (content (cdr (assoc 'content args)))
-            (tags (cdr (assoc 'tags args)))
+            (tags (mcp-memory--ensure-list (cdr (assoc 'tags args))))
             (update-id (cdr (assoc 'id args))))
         (unless title (error "Missing required parameter: title"))
         (unless content (error "Missing required parameter: content"))
@@ -654,30 +695,35 @@ ARGS: title, content, tags (optional), id (optional for update)."
 
 (defun mcp-memory--tool-store (args)
   "Handle memory_store tool. Store webpage/github/arxiv/pdf.
-ARGS: type, url (or path for pdf), title (optional), tags (optional)."
+ARGS: type, url (or path for pdf), title (optional), tags (optional), clone (github only)."
   (condition-case err
       (let ((type (cdr (assoc 'type args)))
             (url (cdr (assoc 'url args)))
             (title (cdr (assoc 'title args)))
-            (tags (cdr (assoc 'tags args))))
+            (tags (mcp-memory--ensure-list (cdr (assoc 'tags args))))
+            (clone-repo (cdr (assoc 'clone args))))
         (unless type (error "Missing required parameter: type"))
         (unless url (error "Missing required parameter: url"))
-        (let ((id (pcase type
-                    ("webpage" (mcp-memory--store-webpage url title tags))
-                    ("github" (mcp-memory--store-github url tags))
-                    ("arxiv" (mcp-memory--store-arxiv url tags))
-                    ("pdf" (mcp-memory--store-pdf url title tags))
-                    (_ (error "Unknown type: %s" type)))))
-          (format "Stored %s: %s\nID: %s" type url id)))
+        (let* ((id (pcase type
+                     ("webpage" (mcp-memory--store-webpage url title tags))
+                     ("github" (mcp-memory--store-github url tags clone-repo))
+                     ("arxiv" (mcp-memory--store-arxiv url tags))
+                     ("pdf" (mcp-memory--store-pdf url title tags))
+                     (_ (error "Unknown type: %s" type))))
+               (mem (mcp-memory--get-by-id id))
+               (cloned-path (cdr (assoc 'cloned_path mem))))
+          (if cloned-path
+              (format "Stored %s: %s\nID: %s\nCloned to: %s\n\nYou can read files from the cloned repository at: %s"
+                      type url id cloned-path cloned-path)
+            (format "Stored %s: %s\nID: %s" type url id))))
     (error (format "Error: %s" (error-message-string err)))))
-
 (defun mcp-memory--tool-search (args)
   "Handle memory_search tool.
 ARGS: query (optional), type (optional), tags (optional), limit (optional)."
   (condition-case err
       (let* ((query (cdr (assoc 'query args)))
              (type (cdr (assoc 'type args)))
-             (tags (cdr (assoc 'tags args)))
+             (tags (mcp-memory--ensure-list (cdr (assoc 'tags args))))
              (limit (or (cdr (assoc 'limit args)) 10))
              (results (mcp-memory--search query type tags limit)))
         (if results
@@ -694,8 +740,8 @@ ARGS: query (optional), type (optional), tags (optional), limit (optional)."
                                         (if (> (length summary) 100)
                                             (concat (substring summary 0 100) "...")
                                           summary)))
-                              (when-let ((tags (cdr (assoc 'tags mem))))
-                                (format "  Tags: %s\n" (string-join tags ", "))))))
+                              (when-let ((mem-tags (mcp-memory--ensure-list (cdr (assoc 'tags mem)))))
+                                (format "  Tags: %s\n" (string-join mem-tags ", "))))))
               (format "Found %d memories:\n\n%s" (length results) output))
           "No memories found matching your criteria."))
     (error (format "Error: %s" (error-message-string err)))))
@@ -716,7 +762,7 @@ ARGS: id, include_content (optional, default true)."
                               (cdr (assoc 'created_at mem)))))
           (when-let ((url (cdr (assoc 'url mem))))
             (setq output (concat output (format "URL: %s\n" url))))
-          (when-let ((tags (cdr (assoc 'tags mem))))
+          (when-let ((tags (mcp-memory--ensure-list (cdr (assoc 'tags mem)))))
             (setq output (concat output (format "Tags: %s\n" (string-join tags ", ")))))
           (when include-content
             (let ((content (mcp-memory--get-content mem)))
@@ -792,7 +838,7 @@ ARGS: id."
                      (required . ("title" "content")))))
 
     ((name . "memory_store")
-     (description . "Store external content: webpage, github repo, arxiv paper, or local PDF.")
+     (description . "Store external content: webpage, github repo, arxiv paper, or local PDF. For github, use clone=true to clone the repo locally for AI to read.")
      (inputSchema . ((type . "object")
                      (properties . ((type . ((type . "string")
                                              (enum . ("webpage" "github" "arxiv" "pdf"))
@@ -803,7 +849,9 @@ ARGS: id."
                                               (description . "Optional title override")))
                                     (tags . ((type . "array")
                                              (items . ((type . "string")))
-                                             (description . "Tags for categorization")))))
+                                             (description . "Tags for categorization")))
+                                    (clone . ((type . "boolean")
+                                              (description . "For github only: clone the repository to .hikettei/memory/repos/ for local file access")))))
                      (required . ("type" "url")))))
 
     ((name . "memory_search")
