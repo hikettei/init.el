@@ -212,8 +212,14 @@ When processing PDF documents, follow this protocol:
 
 ### Step 1: Download the PDF to Local Workspace
 
-- First, download the PDF file to the local workspace (e.g., `./.hikettei/downloads/`)
-- If authentication is required, consider using Chrome MCP (if available) to handle the download through an authenticated browser session
+- First, Move to the pdf preview screen by using explore panel (e.g.: click Download <PDF_NAME> button)
+- Second, use browser_get_state tool to obtain the url you are currently on. If it works, you can get S3 authorized url to download the pdf.
+- (If not exists, use mkdir -p ./.hikettei/downlods)
+- curl -L -o "./.hikettei/downloads/pdf_name.pdf" "OBTAINED_S3_URL" to download the pdf file locally.
+- Inspect the validity of PDF by running:
+  - ls -lh ./.hikettei/downloads
+  - file ".hikettei/downloads/pdf_name.pdf"
+- Then succeed! use memory_store(local_pdf_path, type=pdf) to register it to the memory.
 
 ### Step 2: Choose a Processing Method
 
