@@ -38,10 +38,17 @@
       default-directory))
 
 (defun mcp-browser--get-webkit ()
-  "Get active xwidget-webkit session or error."
-  (or (xwidget-webkit-current-session)
-      (error "No active WebKit browser. Open Explore panel first (C-x j r).")))
-
+  "Get active xwidget-webkit session, searching all buffers if needed."
+  (or
+   ;; Try current session first
+   (xwidget-webkit-current-session)
+   ;; Search all buffers for xwidget-webkit
+   (catch 'found
+     (dolist (buf (buffer-list))
+       (with-current-buffer buf
+         (when (derived-mode-p 'xwidget-webkit-mode)
+           (throw 'found (xwidget-webkit-current-session))))))
+   (error "No active WebKit browser. Open Explore panel first (C-x j r).")))
 (defvar mcp-browser--js-result nil
   "Temporary storage for JavaScript execution result.")
 
@@ -54,10 +61,11 @@ TIMEOUT is max wait time in seconds (default 5)."
         (start (float-time)))
     (xwidget-webkit-execute-script xw script
       (lambda (result) (setq mcp-browser--js-result result)))
-    ;; Wait for result with timeout - use sit-for to process events
+    ;; Wait for result with timeout - use sit-for and redisplay to stay responsive
     (while (and (null mcp-browser--js-result)
                 (< (- (float-time) start) timeout))
-      (sit-for 0.05))
+      (redisplay t)
+      (sit-for 0.05 t))  ;; t = no redisplay (we did it manually)
     (or mcp-browser--js-result "undefined")))
 
 (defun mcp-browser--escape-js-string (str)
@@ -92,13 +100,16 @@ TIMEOUT is max wait time in seconds (default 5)."
     (error (format "Error: %s" (error-message-string err)))))
 
 (defun mcp-browser--tool-navigate (args)
-  "Navigate to URL using existing webkit session."
+  "Navigate to URL using existing webkit session in Explore panel."
   (condition-case err
       (let ((url (cdr (assoc 'url args))))
         (unless url (error "Missing required parameter: url"))
-        (mcp-browser--get-webkit) ;; Ensure webkit exists
-        (xwidget-webkit-goto-url url)
-        (format "Navigated to: %s" url))
+        ;; Get the webkit from workarea (don't switch panels, just navigate)
+        (let ((xw (mcp-browser--get-webkit)))
+          ;; Use xwidget-webkit-goto-uri to navigate existing xwidget
+          ;; This won't create new windows/buffers
+          (xwidget-webkit-goto-uri xw url)
+          (format "Navigated to: %s" url)))
     (error (format "Error: %s" (error-message-string err)))))
 
 (defun mcp-browser--tool-back (_args)
@@ -221,7 +232,7 @@ TIMEOUT is max wait time in seconds (default 5)."
     (error (format "Error: %s" (error-message-string err)))))
 
 (defun mcp-browser--tool-wait (args)
-  "Wait for element to appear."
+  "Wait for element to appear without freezing Emacs."
   (condition-case err
       (let* ((xw (mcp-browser--get-webkit))
              (selector (cdr (assoc 'selector args)))
@@ -235,7 +246,8 @@ TIMEOUT is max wait time in seconds (default 5)."
                                     (mcp-browser--escape-js-string selector)) 1)))
               (if (string= result "true")
                   (setq found t)
-                (sleep-for 0.5))))
+                ;; Use sit-for instead of sleep-for to allow Emacs to process events
+                (sit-for 0.5))))
           (if found
               (format "Element found: %s" selector)
             (format "Timeout after %ds waiting for: %s" timeout selector))))
