@@ -428,8 +428,11 @@ If REUSE-CURRENT is non-nil, rename current tab instead of creating new one."
 
 (defun ai-session--get-mcp-config-flag (agent-config config-file)
   "Get the MCP config flag for AGENT-CONFIG with CONFIG-FILE.
-Uses the mcp-config-flag from agent config, or falls back to --mcp-config."
-  (when (and config-file (plist-get agent-config :mcp-enabled))
+Uses the mcp-config-flag from agent config, or falls back to --mcp-config.
+Returns nil if MCP setup method is not config_file."
+  (when (and config-file
+             (plist-get agent-config :mcp-enabled)
+             (string= (plist-get agent-config :mcp-setup-method) "config_file"))
     (let ((flag (or (plist-get agent-config :mcp-config-flag) "--mcp-config")))
       (format "%s %s" flag (shell-quote-argument config-file)))))
 
@@ -458,22 +461,45 @@ Returns the file content as a string, or nil if file doesn't exist."
 
 (defun ai-session--build-system-prompt-args (agent-name)
   "Build system prompt arguments for AGENT-NAME.
-Reads the prompt file content and returns --append-system-prompt with it."
-  (when-let ((prompt-content (ai-session--load-system-prompt)))
-    (format "--append-system-prompt %s" (shell-quote-argument prompt-content))))
+Reads the prompt file content and returns --append-system-prompt with it.
+Only applicable for Claude agent."
+  (when (string= agent-name "Claude")
+    (when-let ((prompt-content (ai-session--load-system-prompt)))
+      (format "--append-system-prompt %s" (shell-quote-argument prompt-content)))))
+
+(defun ai-session--setup-mcp-add (session)
+  "Setup MCP server using mcp add command for SESSION.
+Used for Codex and Gemini agents that don't support config files."
+  (let* ((config (ai-session-agent-config session))
+         (executable (plist-get config :executable))
+         (server-name (or (plist-get config :mcp-server-name) "emacs-editor"))
+         (mcp-server (ai-session-mcp-server session))
+         (port (when (consp mcp-server) (cdr mcp-server)))
+         (url (format "http://127.0.0.1:%d/mcp" port)))
+    (when port
+      ;; First remove existing server (ignore errors if not exists)
+      (shell-command (format "%s mcp remove %s 2>/dev/null || true"
+                             executable server-name))
+      ;; Add the new server
+      (let ((cmd (format "%s mcp add %s %s" executable server-name url)))
+        (message "Setting up MCP: %s" cmd)
+        (shell-command cmd)))))
 
 (defun ai-session--build-agent-command (session &optional resume)
   "Build the command string to launch agent for SESSION.
 If RESUME is non-nil, append resume_args and session_id.
-Always includes args, MCP config flag, system prompt, and environment variables."
+Handles different MCP setup methods (config_file vs mcp_add)."
   (let* ((config (ai-session-agent-config session))
          (executable (plist-get config :executable))
          (args (plist-get config :args))
          (resume-args (plist-get config :resume-args))
          (env (plist-get config :env))
          (session-id (ai-session-session-id session))
+         (mcp-setup-method (plist-get config :mcp-setup-method))
          (mcp-config-file (ai-session-mcp-config-file session))
-         (mcp-args (ai-session--get-mcp-config-flag config mcp-config-file))
+         ;; Only use MCP config flag for config_file method
+         (mcp-args (when (string= mcp-setup-method "config_file")
+                     (ai-session--get-mcp-config-flag config mcp-config-file)))
          (env-prefix (ai-session--build-env-prefix env))
          ;; Load system prompt for new sessions only (not resume)
          (system-prompt-args (unless resume
@@ -482,12 +508,35 @@ Always includes args, MCP config flag, system prompt, and environment variables.
          (quoted-args (mapconcat #'shell-quote-argument args " "))
          (quoted-resume-args (mapconcat #'shell-quote-argument resume-args " "))
          (base-cmd (if resume
-                       (format "%s %s %s %s %s"
-                               executable
-                               (or mcp-args "")
-                               quoted-args
-                               quoted-resume-args
-                               (or session-id ""))
+                       ;; Resume command varies by agent
+                       (pcase (ai-session-agent session)
+                         ("Claude"
+                          (format "%s %s %s %s %s"
+                                  executable
+                                  (or mcp-args "")
+                                  quoted-args
+                                  quoted-resume-args
+                                  (or session-id "")))
+                         ("Codex"
+                          ;; Codex uses: codex resume --last
+                          (format "%s %s %s"
+                                  executable
+                                  quoted-resume-args
+                                  quoted-args))
+                         ("Gemini"
+                          ;; Gemini uses: gemini -r latest [args]
+                          (format "%s %s %s"
+                                  executable
+                                  quoted-resume-args
+                                  quoted-args))
+                         (_
+                          (format "%s %s %s %s %s"
+                                  executable
+                                  (or mcp-args "")
+                                  quoted-args
+                                  quoted-resume-args
+                                  (or session-id ""))))
+                     ;; New session command
                      (format "%s %s %s %s"
                              executable
                              (or mcp-args "")
@@ -497,6 +546,7 @@ Always includes args, MCP config flag, system prompt, and environment variables.
      (if env-prefix
          (format "%s %s" env-prefix base-cmd)
        base-cmd))))
+
 
 (defun ai-session--setup-layout (session &optional resume)
   "Setup layout for SESSION. Delegates to multi-panel if available."
@@ -538,6 +588,25 @@ Always includes args, MCP config flag, system prompt, and environment variables.
                                          default-directory nil t)))
     (ai-session-create :agent agent :title title :workspace workspace)))
 
+(defun ai-session--setup-mcp (session)
+  "Setup MCP for SESSION based on agent's mcp_setup_method.
+For config_file method: generates MCP config JSON file.
+For mcp_add method: executes 'agent mcp add' command."
+  (let* ((config (ai-session-agent-config session))
+         (mcp-setup-method (or (plist-get config :mcp-setup-method) "config_file")))
+    (pcase mcp-setup-method
+      ("config_file"
+       ;; Generate MCP config file (Claude style)
+       (setf (ai-session-mcp-config-file session)
+             (ai-session--generate-mcp-config session)))
+      ("mcp_add"
+       ;; Use mcp add command (Codex/Gemini style)
+       (ai-session--setup-mcp-add session))
+      (_
+       ;; Default to config_file
+       (setf (ai-session-mcp-config-file session)
+             (ai-session--generate-mcp-config session))))))
+
 (cl-defun ai-session-create (&key agent agent-config title workspace)
   "Create a new session with AGENT, AGENT-CONFIG, TITLE, and WORKSPACE."
   (let* ((id (ai-session--generate-id))
@@ -564,15 +633,15 @@ Always includes args, MCP config flag, system prompt, and environment variables.
     ;; Start MCP server first (needed for config generation)
     (setf (ai-session-mcp-server session)
           (ai-session--start-mcp-server session))
-    ;; Then generate MCP config (uses server port)
-    (setf (ai-session-mcp-config-file session)
-          (ai-session--generate-mcp-config session))
+    ;; Setup MCP based on agent's method (config_file or mcp_add)
+    (ai-session--setup-mcp session)
 
     (ai-session--add-to-history session)
     (ai-session--setup-layout session nil)
 
     (message "Session '%s' created with %s" title agent)
     session))
+
 
 (cl-defun ai-session-resume (&key id agent agent-config title workspace session-id)
   "Resume a session with ID, AGENT, AGENT-CONFIG, TITLE, WORKSPACE and SESSION-ID."
@@ -597,15 +666,15 @@ Always includes args, MCP config flag, system prompt, and environment variables.
     ;; Start MCP server first (needed for config generation)
     (setf (ai-session-mcp-server session)
           (ai-session--start-mcp-server session))
-    ;; Then generate MCP config (uses server port)
-    (setf (ai-session-mcp-config-file session)
-          (ai-session--generate-mcp-config session))
+    ;; Setup MCP based on agent's method (config_file or mcp_add)
+    (ai-session--setup-mcp session)
 
     (ai-session--update-last-accessed session)
     (ai-session--setup-layout session t)
 
     (message "Session '%s' resumed with %s" title agent)
     session))
+
 
 (defun ai-session-close (&optional session)
   "Close SESSION or current session."

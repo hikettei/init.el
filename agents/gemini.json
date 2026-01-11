@@ -7,9 +7,10 @@
   },
   "command": {
     "executable": "gemini",
-    "args": [],
-    "resume_args": ["--resume"],
-    "mcp_config_flag": "--mcp-config",
+    "args": ["--allowed-mcp-server-names", "emacs-editor"],
+    "resume_args": ["-r", "latest"],
+    "mcp_setup_method": "mcp_add",
+    "mcp_server_name": "emacs-editor",
     "env": {
       "MCP_TIMEOUT": "1800000"
     }

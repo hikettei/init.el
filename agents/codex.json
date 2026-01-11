@@ -7,9 +7,10 @@
   },
   "command": {
     "executable": "codex",
-    "args": [],
-    "resume_args": ["--resume"],
-    "mcp_config_flag": "--mcp-config",
+    "args": ["-a", "on-request"],
+    "resume_args": ["resume", "--last"],
+    "mcp_setup_method": "mcp_add",
+    "mcp_server_name": "emacs-editor",
     "env": {
       "MCP_TIMEOUT": "1800000"
     }

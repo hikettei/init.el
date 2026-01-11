@@ -175,6 +175,8 @@
              (args (cdr (assoc 'args command-section)))
              (resume-args (cdr (assoc 'resume_args command-section)))
              (mcp-config-flag (cdr (assoc 'mcp_config_flag command-section)))
+             (mcp-setup-method (cdr (assoc 'mcp_setup_method command-section)))
+             (mcp-server-name (cdr (assoc 'mcp_server_name command-section)))
              (env (cdr (assoc 'env command-section)))
              (mcp-enabled (cdr (assoc 'enabled mcp-section))))
         (when (and name icon desc)
@@ -185,9 +187,12 @@
                            :args (append args nil)
                            :resume-args (append resume-args nil)
                            :mcp-config-flag (or mcp-config-flag "--mcp-config")
+                           :mcp-setup-method (or mcp-setup-method "config_file")
+                           :mcp-server-name (or mcp-server-name "emacs-editor")
                            :env env
                            :mcp-enabled mcp-enabled
                            :config-file file)))))))
+
 
 (defconst sw--no-agent-entry
   '("None" :icon "📝"
@@ -197,10 +202,13 @@
            :args nil
            :resume-args nil
            :mcp-config-flag nil
+           :mcp-setup-method nil
+           :mcp-server-name nil
            :env nil
            :mcp-enabled nil
            :config-file nil)
   "Special entry for 'No AI Agent' option.")
+
 
 (defun sw--load-agents ()
   "Load all agent configurations from `sw-agents-directory'."
@@ -372,8 +380,11 @@ Each entry is (workspace . session-data).")
                                  :args (plist-get agent-props :args)
                                  :resume-args (plist-get agent-props :resume-args)
                                  :mcp-config-flag (plist-get agent-props :mcp-config-flag)
+                                 :mcp-setup-method (plist-get agent-props :mcp-setup-method)
+                                 :mcp-server-name (plist-get agent-props :mcp-server-name)
                                  :env (plist-get agent-props :env)
                                  :mcp-enabled (plist-get agent-props :mcp-enabled)))))
+
       (sw--stop-nyan-animation)
       (kill-buffer sw--buffer-name)
       (when (get-buffer "*Restore Session*")
@@ -785,14 +796,15 @@ Each entry is (workspace . session-data).")
   "Create the session with current settings."
   (interactive)
   (if (or (string-empty-p sw--session-title)
-          (string-empty-p sw--workspace))
-      (message "Please fill in all fields!")
-    (let* ((agent-data (nth sw--current-agent sw--agents))
-           (agent (car agent-data))
-           (agent-props (cdr agent-data))
            (agent-config (list :executable (plist-get agent-props :executable)
                                :args (plist-get agent-props :args)
                                :resume-args (plist-get agent-props :resume-args)
+                               :mcp-config-flag (plist-get agent-props :mcp-config-flag)
+                               :mcp-setup-method (plist-get agent-props :mcp-setup-method)
+                               :mcp-server-name (plist-get agent-props :mcp-server-name)
+                               :env (plist-get agent-props :env)
+                               :mcp-enabled (plist-get agent-props :mcp-enabled)))
+
                                :mcp-config-flag (plist-get agent-props :mcp-config-flag)
                                :env (plist-get agent-props :env)
                                :mcp-enabled (plist-get agent-props :mcp-enabled)))
@@ -829,8 +841,11 @@ Each entry is (workspace . session-data).")
                                  :args (plist-get agent-props :args)
                                  :resume-args (plist-get agent-props :resume-args)
                                  :mcp-config-flag (plist-get agent-props :mcp-config-flag)
+                                 :mcp-setup-method (plist-get agent-props :mcp-setup-method)
+                                 :mcp-server-name (plist-get agent-props :mcp-server-name)
                                  :env (plist-get agent-props :env)
                                  :mcp-enabled (plist-get agent-props :mcp-enabled)))))
+
       (sw--stop-nyan-animation)
       (kill-buffer sw--buffer-name)
       (when (get-buffer "*Restore Session*")
