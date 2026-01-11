@@ -117,14 +117,26 @@ SESSION is the current mcp-session."
       ;; No pending review - show default buffer
       (switch-to-buffer (get-buffer-create "*Autopilot*"))
       (with-current-buffer "*Autopilot*"
-        (let ((inhibit-read-only t)
-              (mode-name (mp-autopilot--mode-display-name mp-autopilot-review-mode))
-              (mode-face (pcase mp-autopilot-review-mode
-                           ('manual '(:foreground "#6272a4"))
-                           ('hybrid '(:foreground "#f1fa8c"))
-                           ('auto-review '(:foreground "#ffb86c"))
-                           ('no-review '(:foreground "#ff5555"))
-                           (_ '(:foreground "#6272a4")))))
+        (let* ((inhibit-read-only t)
+               (mode-name (mp-autopilot--mode-display-name mp-autopilot-review-mode))
+               (mode-face (pcase mp-autopilot-review-mode
+                            ('manual '(:foreground "#6272a4"))
+                            ('hybrid '(:foreground "#f1fa8c"))
+                            ('auto-review '(:foreground "#ffb86c"))
+                            ('no-review '(:foreground "#ff5555"))
+                            (_ '(:foreground "#6272a4"))))
+               ;; Voicebox mode
+               (voice-mode (if (boundp 'mcp-voicebox-mode) mcp-voicebox-mode 'disabled))
+               (voice-name (pcase voice-mode
+                             ('disabled "Disabled")
+                             ('minimum "Minimum")
+                             ('maximum "Maximum")
+                             (_ "Unknown")))
+               (voice-face (pcase voice-mode
+                             ('disabled '(:foreground "#6272a4"))
+                             ('minimum '(:foreground "#8be9fd"))
+                             ('maximum '(:foreground "#50fa7b"))
+                             (_ '(:foreground "#6272a4")))))
           (erase-buffer)
           (insert (propertize "\n  Autopilot Mode\n\n" 'face '(:foreground "#50fa7b" :weight bold)))
           (insert "  Waiting for AI file access...\n\n")
@@ -132,9 +144,14 @@ SESSION is the current mcp-session."
           (insert (propertize "  ─────────────────────────────────────\n" 'face '(:foreground "#44475a")))
           (insert "\n  Review Mode: ")
           (insert (propertize (format "%s" mode-name) 'face (append mode-face '(:weight bold))))
-          (insert "\n\n")
+          (insert "\n")
           (insert (propertize "  C-x j m" 'face '(:foreground "#bd93f9" :weight bold)))
-          (insert (propertize " - Cycle review mode\n" 'face '(:foreground "#6272a4"))))
+          (insert (propertize " - Cycle review mode\n" 'face '(:foreground "#6272a4")))
+          (insert "\n  Voicebox: ")
+          (insert (propertize (format "%s" voice-name) 'face (append voice-face '(:weight bold))))
+          (insert "\n")
+          (insert (propertize "  C-x j v" 'face '(:foreground "#bd93f9" :weight bold)))
+          (insert (propertize " - Cycle voicebox mode\n" 'face '(:foreground "#6272a4"))))
         (special-mode)))))
 
 (defun mp--teardown-autopilot (session)
