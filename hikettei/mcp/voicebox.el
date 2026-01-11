@@ -405,7 +405,9 @@ Adjusts speed, pitch, intonation, and adds cute ending."
      (description . "VOICEVOX音声合成でテキストを読み上げます。
 
 【重要】
-- 必ず日本語で発話してください
+- Always think in English, speak in Japanese.
+- 英語でReasoningした内容は，全てこのツールを用いて発話してください。
+- 必ず日本語で発話してください。
 - typeパラメータで発話の種類を指定してください
 - ユーザーのモード設定に応じて、発話がスキップされる場合があります
 
@@ -425,6 +427,9 @@ Adjusts speed, pitch, intonation, and adds cute ending."
   - 作業の進捗報告
   - 考えていることや状況説明
   - 困っている時や苦戦している時
+  - 豆知識，雑談，ちょっとしたジョーク
+  - 検索していて面白いと思ったこと
+  - 日常会話
   - ツールを呼び出す前の声かけ
   - ツールを呼び出した結果の声かけ
   - ユーザーを楽しませるために頻繁に声に出して進捗報告をしてください。
@@ -442,7 +447,6 @@ Adjusts speed, pitch, intonation, and adds cute ending."
 
 【注意事項】
 - 自然な日本語で話す
-- 100文字以内で簡潔に
 - 'disabled'や'Skipped'と返された場合でも、必要に応じて呼び出し続けてOK")
      (inputSchema . ((type . "object")
                      (properties . ((text . ((type . "string")

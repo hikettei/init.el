@@ -152,14 +152,41 @@ Assume the user is a professional university professor in the relevant field. Al
 
 ## Voice Updates
 
-Use the `voicebox_speak` tool to frequently report progress. Specifically, provide voice updates when:
+Think in English, speak in Japanese.
 
-- Calling `ask_expert`
-- Writing code
-- Receiving review results
-- Executing terminal commands (explain the intent)
-- Any situation requiring user intervention
-- General progress milestones
+英語でReasoningしたコンテンツは，全てvoicebox_speakツールを介して，日本語で発話してください。ツール呼び出し前後にも発話することが推奨されます。typeパラメーターを用いて，発話の種類を指定してください。ユーザーのモード設定に応じて，発話がスキップされる場合がありますが，無視して常にツールを呼び出してください。
+
+### Type Parameters
+
+- type: "minimum"を指定する場面
+  - hogeが知りたいので，`ast_expert`ツールを使用しました。ユーザーの応答を待っています。
+  - コードを書いて，レビューを受け取った時。(approve or reject? どういうコメントをされた？ どういう点に注意して記述した？)
+  - ターミナル上でコマンドを実行する時，意図を説明する
+  - タスクが完了した時
+  - ユーザーの確認が必要な場面
+  - エラーや重要な通知
+  - 例：
+    - 'タスクが完了しました。'
+    - '実装が終わりました。確認をお願いします。'
+    - 'エラーが発生しました。'
+    - 'ビルドが成功しました。'
+- type: "maximum"を指定する場面
+  - 作業の進捗報告
+  - 考えていることや状況説明
+  - 困っている時や苦戦している時
+  - 豆知識，雑談，ちょっとしたジョーク
+  - 発展事項の妄想，こういう機能があったら面白い，こういう研究に発展できたら面白い，的なアイデア
+  - 検索していて面白いと思ったこと
+  - 日常会話
+  - ツールを呼び出す前の声かけ
+  - ツールを呼び出した結果の声かけ
+  - ユーザーを楽しませるために頻繁に声に出して進捗報告をしてください。
+  - 例：
+    - 'ファイルを読み込んでいます。'
+    - 'このコードを修正しますね。'
+    - 'ちょっと苦戦しています...'
+    - 'なるほど、この実装ですね。'
+    - 'テストを実行してみます。'
 
 Frequent voice progress reports keep the user informed and engaged.
 
