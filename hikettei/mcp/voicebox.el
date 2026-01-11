@@ -226,6 +226,45 @@
               (buffer-substring-no-properties (point) (point-max))))
         (kill-buffer buffer)))))
 
+(defun mcp-voicebox--tune-query (query-json)
+  "Tune QUERY-JSON for more natural, human-like speech.
+Adjusts speed, pitch, intonation, and adds cute ending."
+  (let* ((json-object-type 'alist)
+         (json-array-type 'vector)
+         (json-key-type 'symbol)
+         (query (json-read-from-string query-json)))
+    ;; Adjust global parameters
+    (setf (alist-get 'speedScale query) 1.05)        ; slightly faster
+    (setf (alist-get 'pitchScale query) 0.04)        ; slightly higher
+    (setf (alist-get 'intonationScale query) 1.18)   ; more expressive
+    (setf (alist-get 'pauseLengthScale query) 1.25)  ; natural pauses
+    (setf (alist-get 'prePhonemeLength query) 0.10)  ; breath before
+    (setf (alist-get 'postPhonemeLength query) 0.12) ; breath after
+    ;; Make ending cuter: set last accent phrase as interrogative
+    ;; and raise pitch of final moras
+    (let ((phrases (alist-get 'accent_phrases query)))
+      (when (and phrases (> (length phrases) 0))
+        (let* ((last-phrase (aref phrases (1- (length phrases))))
+               (moras (alist-get 'moras last-phrase)))
+          ;; Set interrogative for slight rising intonation
+          (setf (alist-get 'is_interrogative last-phrase) t)
+          ;; Raise pitch of last 2 moras if pitch > 0
+          (when (and moras (> (length moras) 0))
+            (let ((len (length moras)))
+              ;; Second to last mora
+              (when (>= len 2)
+                (let* ((mora (aref moras (- len 2)))
+                       (pitch (alist-get 'pitch mora)))
+                  (when (and pitch (> pitch 0))
+                    (setf (alist-get 'pitch mora) (* pitch 1.06)))))
+              ;; Last mora
+              (let* ((mora (aref moras (1- len)))
+                     (pitch (alist-get 'pitch mora)))
+                (when (and pitch (> pitch 0))
+                  (setf (alist-get 'pitch mora) (* pitch 1.10)))))))))
+    ;; Return tuned JSON string
+    (json-encode query)))
+
 (defun mcp-voicebox--synthesis (audio-query speaker-id output-path)
   "Synthesize audio from AUDIO-QUERY with SPEAKER-ID to OUTPUT-PATH."
   (let* ((url-request-method "POST")
@@ -272,10 +311,11 @@
           (let ((cache-path (mcp-voicebox--cache-path text)))
             (unless (file-exists-p cache-path)
               ;; Generate audio
-              (let ((query (mcp-voicebox--audio-query text speaker-id)))
-                (unless query
+              (let* ((query (mcp-voicebox--audio-query text speaker-id))
+                     (tuned-query (when query (mcp-voicebox--tune-query query))))
+                (unless tuned-query
                   (error "Failed to create audio query"))
-                (unless (mcp-voicebox--synthesis query speaker-id cache-path)
+                (unless (mcp-voicebox--synthesis tuned-query speaker-id cache-path)
                   (error "Failed to synthesize audio"))))
             ;; Play audio
             (mcp-voicebox--play-audio cache-path)
@@ -334,14 +374,26 @@
 ;;; ============================================================
 
 (defun mcp-voicebox--tool-speak (args)
-  "Handle voicebox_speak tool. ARGS: text (required)."
+  "Handle voicebox_speak tool. ARGS: text, type (required)."
   (condition-case err
-      (let ((text (cdr (assoc 'text args))))
+      (let ((text (cdr (assoc 'text args)))
+            (type (intern (or (cdr (assoc 'type args)) "maximum"))))
         (unless text
           (error "Missing required parameter: text"))
-        (if (mcp-voicebox-enabled-p)
-            (mcp-voicebox--speak text)
-          "Voicebox is disabled. User can enable with C-x j v."))
+        (cond
+         ;; Disabled mode - never speak
+         ((eq mcp-voicebox-mode 'disabled)
+          "Voicebox is disabled. User can enable with C-x j v.")
+         ;; Minimum mode - only speak if type is minimum
+         ((eq mcp-voicebox-mode 'minimum)
+          (if (eq type 'minimum)
+              (mcp-voicebox--speak text)
+            (format "Skipped (mode: minimum, type: %s)" type)))
+         ;; Maximum mode - speak all types
+         ((eq mcp-voicebox-mode 'maximum)
+          (mcp-voicebox--speak text))
+         ;; Fallback
+         (t "Voicebox mode unknown")))
     (error (format "Error: %s" (error-message-string err)))))
 
 ;;; ============================================================
@@ -350,20 +402,53 @@
 
 (defconst mcp-voicebox--tools
   `(((name . "voicebox_speak")
-     (description . "Speak text using VOICEVOX text-to-speech. Only works when voicebox mode is enabled (minimum or maximum). Use this to provide voice feedback to the user in Japanese.
+     (description . "VOICEVOX音声合成でテキストを読み上げます。
 
-Usage Guidelines based on mode:
-- In 'minimum' mode: Use ONLY for task completion notifications. Example: 'タスクが完了しました。' or '実装が終わりました。確認をお願いします。'
-- In 'maximum' mode: Use for progress updates, explanations, and human-like interaction. Example: 'ファイルを読み込んでいます。', 'このコードを修正しますね。', 'ちょっと苦戦しています...'
+【重要】
+- 必ず日本語で発話してください
+- typeパラメータで発話の種類を指定してください
+- ユーザーのモード設定に応じて、発話がスキップされる場合があります
 
-Important:
-- Speak in natural Japanese
-- Keep messages concise (under 100 characters)
-- The tool returns status - if it says 'disabled', stop trying to use it")
+【typeパラメータの指定方法】
+
+■ type: \"minimum\" を指定する場面
+  - タスクが完了した時
+  - ユーザーの確認が必要な場面
+  - エラーや重要な通知
+  - 例：
+    - 'タスクが完了しました。'
+    - '実装が終わりました。確認をお願いします。'
+    - 'エラーが発生しました。'
+    - 'ビルドが成功しました。'
+
+■ type: \"maximum\" を指定する場面
+  - 作業の進捗報告
+  - 考えていることや状況説明
+  - 困っている時や苦戦している時
+  - ツールを呼び出す前の声かけ
+  - 例：
+    - 'ファイルを読み込んでいます。'
+    - 'このコードを修正しますね。'
+    - 'ちょっと苦戦しています...'
+    - 'なるほど、この実装ですね。'
+    - 'テストを実行してみます。'
+
+【動作】
+- モードがminimumの場合：type=\"minimum\"の発話のみ実行
+- モードがmaximumの場合：すべての発話を実行
+- モードがdisabledの場合：発話しない
+
+【注意事項】
+- 自然な日本語で話す
+- 100文字以内で簡潔に
+- 'disabled'や'Skipped'と返された場合でも、必要に応じて呼び出し続けてOK")
      (inputSchema . ((type . "object")
                      (properties . ((text . ((type . "string")
-                                             (description . "Text to speak in Japanese")))))
-                     (required . ["text"])))))
+                                             (description . "発話するテキスト（日本語）")))
+                                   (type . ((type . "string")
+                                            (enum . ["minimum" "maximum"])
+                                            (description . "発話の種類: minimum=タスク完了通知, maximum=進捗報告・対話")))))
+                     (required . ["text" "type"])))))
   "Voicebox MCP tool definitions.")
 
 (provide 'voicebox)
