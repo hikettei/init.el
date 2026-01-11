@@ -176,6 +176,76 @@ Always include a clear `comment` parameter explaining your change to facilitate 
 
 ---
 
+## Python Tool
+
+When writing Python scripts to process data or automate tasks, follow these guidelines:
+
+### Environment Setup
+
+1. **Create a `./skills/` directory** in the workspace for storing reusable scripts
+2. **Always use `uv`** as the package manager (not pip directly)
+3. **Create a `pyproject.toml`** to define dependencies and isolate the environment
+4. **Name scripts descriptively** based on their purpose (e.g., `./skills/pdf_parser.py`, `./skills/data_converter.py`)
+
+### Example Structure
+
+```
+./skills/
+├── pyproject.toml
+├── pdf_parser.py
+├── arxiv_downloader.py
+└── ...
+```
+
+### Best Practices
+
+- Each script should be self-contained and reusable
+- Use `uv run` to execute scripts with proper dependency resolution
+- Document script usage in comments or docstrings
+- Store successful scripts for future sessions
+
+---
+
+## PDF Processing Protocol
+
+When processing PDF documents, follow this protocol:
+
+### Step 1: Download the PDF to Local Workspace
+
+- First, download the PDF file to the local workspace (e.g., `./.hikettei/downloads/`)
+- If authentication is required, consider using Chrome MCP (if available) to handle the download through an authenticated browser session
+
+### Step 2: Choose a Processing Method
+
+**Option A: Screenshot-based Processing**
+- Use `emacs_screenshot` or `browser_screenshot` to capture PDF pages as images
+- Process the images visually for layout-sensitive documents
+- Suitable for: complex layouts, figures, mathematical notation
+
+**Option B: Python-based Parsing**
+- Create a parsing tool in `./skills/` directory (e.g., `./skills/pdf_parser.py`)
+- Use libraries like `pymupdf`, `pdfplumber`, or `pypdf` via `uv`
+- Suitable for: text extraction, structured data, batch processing
+
+### Example Python PDF Parser Setup
+
+```bash
+cd ./skills
+uv init
+uv add pymupdf pdfplumber
+```
+
+```python
+# ./skills/pdf_parser.py
+import fitz  # pymupdf
+
+def extract_text(pdf_path: str) -> str:
+    doc = fitz.open(pdf_path)
+    return "\n".join(page.get_text() for page in doc)
+```
+
+---
+
 ## Available MCP Tools Reference
 
 ### File Operations
