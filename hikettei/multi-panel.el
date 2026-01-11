@@ -588,6 +588,11 @@ Restores complete window layout including splits using `window-state-put'."
 (defun mp--show-ai-chat (&optional resume)
   "Show AI Chat in side window.
 If RESUME is non-nil, resume the agent session."
+  ;; When resuming, we need to start fresh with a new command
+  (when (and resume mp--ai-chat-buffer (buffer-live-p mp--ai-chat-buffer))
+    (kill-buffer mp--ai-chat-buffer)
+    (setq mp--ai-chat-buffer nil))
+  
   (unless (and mp--ai-chat-buffer (buffer-live-p mp--ai-chat-buffer))
     (let* ((session (and (boundp 'ai-session--current) ai-session--current))
            (workspace (if (and session (fboundp 'ai-session-workspace))

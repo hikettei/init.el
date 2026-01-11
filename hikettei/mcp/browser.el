@@ -241,7 +241,12 @@ Wraps script in try-catch and returns result or error message."
              (script (cdr (assoc 'script args))))
         (unless script (error "Missing required parameter: script"))
         (let ((result (mcp-browser--safe-execute-js xw script)))
-          (or result "undefined")))
+          ;; Ensure result is always a string for MCP protocol
+          (cond
+           ((null result) "undefined")
+           ((stringp result) result)
+           ((numberp result) (number-to-string result))
+           (t (format "%s" result)))))
     (error (format "Error: %s" (error-message-string err)))))
 
 (defun mcp-browser--tool-screenshot (_args)

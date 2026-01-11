@@ -482,8 +482,16 @@ ARGS should contain 'panel' - the panel ID to switch to."
                    ;; Panel tools
                    ("emacs_switch_panel" (mcp-server--tool-switch-panel args))
                    ("emacs_list_panels" (mcp-server--tool-list-panels args))
-                   (_ (format "Error: Unknown tool: %s" name)))))
-    `((content . [((type . "text") (text . ,result))]))))
+                   (_ (format "Error: Unknown tool: %s" name))))
+         ;; Detect if result is an error message
+         (is-error (and (stringp result)
+                        (or (string-prefix-p "Error:" result)
+                            (string-prefix-p "[JS Error" result)
+                            (string-match-p "^\\[Error\\]" result)))))
+    (if is-error
+        `((content . [((type . "text") (text . ,result))])
+          (isError . t))
+      `((content . [((type . "text") (text . ,result))])))))
 
 (defun mcp-server--dispatch (method params)
   "Dispatch MCP method."
