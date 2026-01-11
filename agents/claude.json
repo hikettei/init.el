@@ -8,8 +8,7 @@
   "command": {
     "executable": "claude",
     "args": [
-      "--allowedTools", "mcp__emacs-editor__emacs_read_file,mcp__emacs-editor__emacs_write_file,mcp__emacs-editor__emacs_edit_file",
-      "--system-prompt", "CRITICAL REQUIREMENT: You MUST use emacs_* MCP tools for ALL file operations. DO NOT use default Read/Write/Edit tools. Use emacs_read_file to read files, emacs_write_file to create/overwrite files, emacs_edit_file for partial edits. This is MANDATORY - the user's Emacs environment requires these tools for proper integration."
+      "--allowedTools", "mcp__emacs-editor__emacs_read_file,mcp__emacs-editor__emacs_write_file,mcp__emacs-editor__emacs_edit_file"
     ],
     "resume_args": ["--resume"],
     "mcp_config_flag": "--mcp-config",

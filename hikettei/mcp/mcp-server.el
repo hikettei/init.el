@@ -26,12 +26,12 @@
 (require 'url-parse)
 (require 'web-server)
 
-;; Load memory and browser modules from same directory
-;; Load memory, browser, and voicebox modules from same directory
+;; Load modules from same directory
 (let ((dir (file-name-directory (or load-file-name buffer-file-name))))
   (load (expand-file-name "memory" dir) nil t)
   (load (expand-file-name "browser" dir) nil t)
-  (load (expand-file-name "voicebox" dir) nil t))
+  (load (expand-file-name "voicebox" dir) nil t)
+  (load (expand-file-name "ask-expert" dir) nil t))
 
 (declare-function file-editor-open "file-editor")
 (declare-function ws-start "web-server")
@@ -475,6 +475,10 @@ ARGS should contain 'panel' - the panel ID to switch to."
                    ("browser_wait" (mcp-browser--tool-wait args))
                    ;; Voicebox tools
                    ("voicebox_speak" (mcp-voicebox--tool-speak args))
+                   ;; Ask Expert tools
+                   ("ask_expert" (ask-expert--tool-ask args))
+                   ("get_expert_answer" (ask-expert--tool-get-answer args))
+                   ("check_expert_answer" (ask-expert--tool-check-answer args))
                    ;; Panel tools
                    ("emacs_switch_panel" (mcp-server--tool-switch-panel args))
                    ("emacs_list_panels" (mcp-server--tool-list-panels args))
@@ -486,7 +490,7 @@ ARGS should contain 'panel' - the panel ID to switch to."
   (pcase method
     ("initialize" (mcp-server--handle-initialize params))
     ("notifications/initialized" nil)
-    ("tools/list" `((tools . ,(vconcat mcp-server--tools mcp-memory--tools mcp-browser--tools mcp-voicebox--tools))))
+    ("tools/list" `((tools . ,(vconcat mcp-server--tools mcp-memory--tools mcp-browser--tools mcp-voicebox--tools ask-expert--tools))))
     ("tools/call" (mcp-server--handle-tools-call params))
     (_ `((content . [((type . "text")
                       (text . ,(format "Error: Unknown method: %s" method)))])))))

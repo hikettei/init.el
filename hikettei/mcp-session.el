@@ -441,10 +441,31 @@ ENV-ALIST is ((KEY . VALUE) ...) from agent config."
                  (format "%s=%s" (car pair) (cdr pair)))
                env-alist " ")))
 
+(defcustom ai-session-system-prompt-file "prompt/SYSTEM_INSTRUCTION.md"
+  "Path to system instruction file relative to `user-emacs-directory'.
+This file is loaded and passed to AI agents via --append-system-prompt."
+  :type 'string
+  :group 'ai-session)
+
+(defun ai-session--load-system-prompt ()
+  "Load system prompt content from `ai-session-system-prompt-file'.
+Returns the file content as a string, or nil if file doesn't exist."
+  (let ((file (expand-file-name ai-session-system-prompt-file user-emacs-directory)))
+    (when (file-exists-p file)
+      (with-temp-buffer
+        (insert-file-contents file)
+        (buffer-string)))))
+
+(defun ai-session--build-system-prompt-args (agent-name)
+  "Build system prompt arguments for AGENT-NAME.
+Reads the prompt file content and returns --append-system-prompt with it."
+  (when-let ((prompt-content (ai-session--load-system-prompt)))
+    (format "--append-system-prompt %s" (shell-quote-argument prompt-content))))
+
 (defun ai-session--build-agent-command (session &optional resume)
   "Build the command string to launch agent for SESSION.
 If RESUME is non-nil, append resume_args and session_id.
-Always includes args, MCP config flag, and environment variables."
+Always includes args, MCP config flag, system prompt, and environment variables."
   (let* ((config (ai-session-agent-config session))
          (executable (plist-get config :executable))
          (args (plist-get config :args))
@@ -454,6 +475,10 @@ Always includes args, MCP config flag, and environment variables."
          (mcp-config-file (ai-session-mcp-config-file session))
          (mcp-args (ai-session--get-mcp-config-flag config mcp-config-file))
          (env-prefix (ai-session--build-env-prefix env))
+         ;; Load system prompt for new sessions only (not resume)
+         (system-prompt-args (unless resume
+                               (ai-session--build-system-prompt-args
+                                (ai-session-agent session))))
          (quoted-args (mapconcat #'shell-quote-argument args " "))
          (quoted-resume-args (mapconcat #'shell-quote-argument resume-args " "))
          (base-cmd (if resume
@@ -463,9 +488,10 @@ Always includes args, MCP config flag, and environment variables."
                                quoted-args
                                quoted-resume-args
                                (or session-id ""))
-                     (format "%s %s %s"
+                     (format "%s %s %s %s"
                              executable
                              (or mcp-args "")
+                             (or system-prompt-args "")
                              quoted-args))))
     (string-trim
      (if env-prefix
