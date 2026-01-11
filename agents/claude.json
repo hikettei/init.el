@@ -8,7 +8,8 @@
   "command": {
     "executable": "claude",
     "args": [
-      "--allowedTools", "mcp__emacs-editor__emacs_read_file,mcp__emacs-editor__emacs_write_file,mcp__emacs-editor__emacs_edit_file"
+      "--allowedTools",
+      "mcp__emacs-editor__emacs_read_file,mcp__emacs-editor__emacs_write_file,mcp__emacs-editor__emacs_edit_file,mcp__emacs-editor__emacs_eval,mcp__emacs-editor__emacs_screenshot,mcp__emacs-editor__emacs_get_pending_review,mcp__emacs-editor__emacs_switch_panel,mcp__emacs-editor__emacs_list_panels,mcp__emacs-editor__memory_note,mcp__emacs-editor__memory_store,mcp__emacs-editor__memory_search,mcp__emacs-editor__memory_get,mcp__emacs-editor__memory_list,mcp__emacs-editor__memory_delete,mcp__emacs-editor__browser_open,mcp__emacs-editor__browser_navigate,mcp__emacs-editor__browser_back,mcp__emacs-editor__browser_forward,mcp__emacs-editor__browser_reload,mcp__emacs-editor__browser_get_state,mcp__emacs-editor__browser_get_content,mcp__emacs-editor__browser_get_links,mcp__emacs-editor__browser_click,mcp__emacs-editor__browser_type,mcp__emacs-editor__browser_scroll,mcp__emacs-editor__browser_execute_js,mcp__emacs-editor__browser_screenshot,mcp__emacs-editor__browser_wait,mcp__emacs-editor__voicebox_speak,mcp__emacs-editor__ask_expert,mcp__emacs-editor__get_expert_answer,mcp__emacs-editor__check_expert_answer"
     ],
     "resume_args": ["--resume"],
     "mcp_config_flag": "--mcp-config",
