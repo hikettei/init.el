@@ -335,8 +335,18 @@ If RESUME is non-nil, resume the agent session."
                                           ('auto-review "A")
                                           ('no-review "N")
                                           (_ "?")))
-                              "")))
-        (push (propertize (format " %s%s %s [%s]%s " indicator icon name key mode-indicator)
+                              ""))
+             ;; Show voicebox mode indicator for autopilot
+             (voice-indicator (if (and (eq id 'autopilot)
+                                       (boundp 'mcp-voicebox-mode))
+                                 (format " %s"
+                                         (pcase mcp-voicebox-mode
+                                           ('disabled "🔇")
+                                           ('minimum "🔈")
+                                           ('maximum "🔊")
+                                           (_ "")))
+                               "")))
+        (push (propertize (format " %s%s %s [%s]%s%s " indicator icon name key mode-indicator voice-indicator)
                           'face face
                           'mouse-face 'highlight
                           'keymap (mp--feat-tab-keymap id)
@@ -585,6 +595,7 @@ If RESUME is non-nil, resume the agent session."
   (setq mp--ai-chat-visible t))
 
 (define-key mp-prefix-map (kbd "c") #'mp-toggle-ai-chat)
+(define-key mp-prefix-map (kbd "v") #'mcp-voicebox-cycle-mode)
 
 ;;; ============================================================
 ;;; Panel Loading
