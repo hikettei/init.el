@@ -26,9 +26,10 @@
 (require 'url-parse)
 (require 'web-server)
 
-;; Load memory module from same directory
+;; Load memory and browser modules from same directory
 (let ((dir (file-name-directory (or load-file-name buffer-file-name))))
-  (load (expand-file-name "memory" dir) nil t))
+  (load (expand-file-name "memory" dir) nil t)
+  (load (expand-file-name "browser" dir) nil t))
 
 (declare-function file-editor-open "file-editor")
 (declare-function ws-start "web-server")
@@ -408,6 +409,21 @@ Returns formatted response string."
                    ("memory_get" (mcp-memory--tool-get args))
                    ("memory_list" (mcp-memory--tool-list args))
                    ("memory_delete" (mcp-memory--tool-delete args))
+                   ;; Browser tools
+                   ("browser_open" (mcp-browser--tool-open args))
+                   ("browser_navigate" (mcp-browser--tool-navigate args))
+                   ("browser_back" (mcp-browser--tool-back args))
+                   ("browser_forward" (mcp-browser--tool-forward args))
+                   ("browser_reload" (mcp-browser--tool-reload args))
+                   ("browser_get_state" (mcp-browser--tool-get-state args))
+                   ("browser_get_content" (mcp-browser--tool-get-content args))
+                   ("browser_get_links" (mcp-browser--tool-get-links args))
+                   ("browser_click" (mcp-browser--tool-click args))
+                   ("browser_type" (mcp-browser--tool-type args))
+                   ("browser_scroll" (mcp-browser--tool-scroll args))
+                   ("browser_execute_js" (mcp-browser--tool-execute-js args))
+                   ("browser_screenshot" (mcp-browser--tool-screenshot args))
+                   ("browser_wait" (mcp-browser--tool-wait args))
                    (_ (format "Error: Unknown tool: %s" name)))))
     `((content . [((type . "text") (text . ,result))]))))
 
@@ -416,7 +432,7 @@ Returns formatted response string."
   (pcase method
     ("initialize" (mcp-server--handle-initialize params))
     ("notifications/initialized" nil)
-    ("tools/list" `((tools . ,(vconcat mcp-server--tools mcp-memory--tools))))
+    ("tools/list" `((tools . ,(vconcat mcp-server--tools mcp-memory--tools mcp-browser--tools))))
     ("tools/call" (mcp-server--handle-tools-call params))
     (_ `((content . [((type . "text")
                       (text . ,(format "Error: Unknown method: %s" method)))])))))
