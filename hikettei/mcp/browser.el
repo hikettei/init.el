@@ -44,8 +44,7 @@
 
 (defvar mcp-browser--js-result nil
   "Temporary storage for JavaScript execution result.")
-(defvar mcp-browser--js-result nil
-  "Temporary storage for JavaScript execution result.")
+
 
 (defun mcp-browser--execute-js-sync (xw script &optional timeout)
   "Execute SCRIPT in xwidget XW synchronously and return result.
@@ -103,28 +102,29 @@ TIMEOUT is max wait time in seconds (default 5)."
     (error (format "Error: %s" (error-message-string err)))))
 
 (defun mcp-browser--tool-back (_args)
-  "Go back in history."
+  "Go back in history using JavaScript."
   (condition-case err
-      (progn
-        (xwidget-webkit-back (mcp-browser--get-webkit))
+      (let ((xw (mcp-browser--get-webkit)))
+        (xwidget-webkit-execute-script xw "window.history.back()")
         "Navigated back")
     (error (format "Error: %s" (error-message-string err)))))
 
 (defun mcp-browser--tool-forward (_args)
-  "Go forward in history."
+  "Go forward in history using JavaScript."
   (condition-case err
-      (progn
-        (xwidget-webkit-forward (mcp-browser--get-webkit))
+      (let ((xw (mcp-browser--get-webkit)))
+        (xwidget-webkit-execute-script xw "window.history.forward()")
         "Navigated forward")
     (error (format "Error: %s" (error-message-string err)))))
 
 (defun mcp-browser--tool-reload (_args)
   "Reload current page."
   (condition-case err
-      (progn
-        (xwidget-webkit-reload (mcp-browser--get-webkit))
+      (let ((xw (mcp-browser--get-webkit)))
+        (xwidget-webkit-reload xw)
         "Page reloaded")
     (error (format "Error: %s" (error-message-string err)))))
+
 
 (defun mcp-browser--tool-get-state (_args)
   "Get browser state."
