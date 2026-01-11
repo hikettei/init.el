@@ -447,22 +447,20 @@ This file is loaded and passed to AI agents via --append-system-prompt."
   :type 'string
   :group 'ai-session)
 
-(defun ai-session--get-system-prompt-path ()
-  "Get absolute path to system prompt file if it exists."
+(defun ai-session--load-system-prompt ()
+  "Load system prompt content from `ai-session-system-prompt-file'.
+Returns the file content as a string, or nil if file doesn't exist."
   (let ((file (expand-file-name ai-session-system-prompt-file user-emacs-directory)))
-    (when (file-exists-p file) file)))
+    (when (file-exists-p file)
+      (with-temp-buffer
+        (insert-file-contents file)
+        (buffer-string)))))
 
 (defun ai-session--build-system-prompt-args (agent-name)
   "Build system prompt arguments for AGENT-NAME.
-Returns argument string using --append-system-prompt with file path."
-  (when-let ((prompt-file (ai-session--get-system-prompt-path)))
-    ;; Claude uses --append-system-prompt for file-based prompts
-    (let ((flag (pcase (downcase agent-name)
-                  ("claude" "--append-system-prompt")
-                  ("gemini" "--append-system-prompt")
-                  ("codex" "--append-system-prompt")
-                  (_ "--append-system-prompt"))))
-      (format "%s %s" flag (shell-quote-argument prompt-file)))))
+Reads the prompt file content and returns --append-system-prompt with it."
+  (when-let ((prompt-content (ai-session--load-system-prompt)))
+    (format "--append-system-prompt %s" (shell-quote-argument prompt-content))))
 
 (defun ai-session--build-agent-command (session &optional resume)
   "Build the command string to launch agent for SESSION.
