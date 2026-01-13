@@ -151,26 +151,19 @@
     (let ((mem (mcp-memory--get-by-id id)))
       (when mem
         (let* ((type (cdr (assoc 'type mem)))
-               (file (cdr (assoc 'file mem))))
-          (cond
-           ((and (string= type "note") file (file-exists-p file))
-            (mp-memory--open-markdown-preview file))
-           ((and file (file-exists-p file) (string-suffix-p ".md" file t))
-            (mp-memory--open-markdown-preview file))
-           (t
-            (message "No markdown file available for this memory"))))))))
+               (relative-path (cdr (assoc 'file_path mem)))
+               (file (and relative-path (expand-file-name relative-path (mcp-memory--memory-dir)))))
+          (if (and file (file-exists-p file)
+                   (or (string= type "note")
+                       (string-suffix-p ".md" file t)))
+              (mp-memory--open-markdown-preview file)
+            (message "No markdown file available for this memory")))))))
 
 (defun mp-memory--open-markdown-preview (file)
   "Open FILE and trigger markdown preview in the preview window."
-  (let ((target-win (cond
-                     ((and mp-memory--preview-window
-                           (window-live-p mp-memory--preview-window))
-                      mp-memory--preview-window)
-                     ((and (boundp 'mp--workarea-window)
-                           mp--workarea-window
-                           (window-live-p mp--workarea-window))
-                      mp--workarea-window)
-                     (t nil))))
+  (let ((target-win (and mp-memory--preview-window
+                         (window-live-p mp-memory--preview-window)
+                         mp-memory--preview-window)))
     (if target-win
         (with-selected-window target-win
           (find-file file)
@@ -183,6 +176,7 @@
             (markdown-mode)
             (message "Opened %s in markdown-mode" (file-name-nondirectory file)))))
       (find-file-other-window file))))
+
 
 
 (defun mp-memory--post-command-hook ()
