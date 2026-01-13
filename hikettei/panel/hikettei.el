@@ -2,10 +2,10 @@
 
 ;;; Commentary:
 ;; 手動コーディングモード - AI Codingが解けなさそうな問題を手作業でコーディング
+;; C-c SPC: Set mark / Save region (1回目でマーク、2回目で保存)
 ;; C-c a: Ask AI
-;; C-c i: Impl AI
-;; C-c r: Review AI
-;; C-c SPC: Set region
+;; C-c i: Impl AI (実装依頼)
+;; C-c r: Review AI (コードレビュー)
 ;;
 ;; Neotree でファイルをクリックすると、自動的に Hikettei パネルに切り替わり、
 ;; ファイルが WorkArea に表示される。
@@ -35,9 +35,12 @@
   "Overlay for highlighting selected region.")
 
 (defun mp-hikettei-set-region ()
-  "Set the selected region for AI operations with file and line info."
+  "Set mark or save region for AI operations.
+If no region is active, set mark at point (like C-SPC).
+If region is active, save the region info for AI operations."
   (interactive)
   (if (use-region-p)
+      ;; Region is active - save it
       (let* ((beg (region-beginning))
              (end (region-end))
              (start-line (line-number-at-pos beg))
@@ -57,17 +60,42 @@
         (overlay-put mp-hikettei--region-overlay 'face '(:background "#44475a"))
         (overlay-put mp-hikettei--region-overlay 'evaporate t)
         (deactivate-mark)
-        (message "Region set: %s L%d-%d (%d chars)"
+        (message "Region saved: %s L%d-%d (%d chars)"
                  (file-name-nondirectory file-name) start-line end-line (length content)))
-    (message "No region selected")))
+    ;; No region - set mark (same as C-SPC)
+    (push-mark (point) t t)
+    (message "Mark set. Select text then C-c SPC again to save region.")))
+
+
+(defun mp-hikettei--get-region-info ()
+  "Get region info from active region or saved region.
+Returns plist with :file :start-line :end-line :content, or nil."
+  (cond
+   ;; First priority: active region
+   ((use-region-p)
+    (let* ((beg (region-beginning))
+           (end (region-end))
+           (start-line (line-number-at-pos beg))
+           (end-line (line-number-at-pos end))
+           (file-name (or (buffer-file-name) (buffer-name)))
+           (content (buffer-substring-no-properties beg end)))
+      (list :file file-name
+            :start-line start-line
+            :end-line end-line
+            :content content)))
+   ;; Second priority: saved region
+   (mp-hikettei--region-info
+    mp-hikettei--region-info)
+   ;; No region
+   (t nil)))
 
 (defun mp-hikettei--format-region-context ()
   "Format the selected region with file and line context."
-  (when mp-hikettei--region-info
-    (let ((file (plist-get mp-hikettei--region-info :file))
-          (start (plist-get mp-hikettei--region-info :start-line))
-          (end (plist-get mp-hikettei--region-info :end-line))
-          (content (plist-get mp-hikettei--region-info :content)))
+  (when-let ((info (mp-hikettei--get-region-info)))
+    (let ((file (plist-get info :file))
+          (start (plist-get info :start-line))
+          (end (plist-get info :end-line))
+          (content (plist-get info :content)))
       (format "File: %s (lines %d-%d)\n```\n%s\n```"
               (abbreviate-file-name file) start end content))))
 
@@ -96,14 +124,15 @@
 (defun mp-hikettei-impl ()
   "Request AI to implement code for selected region."
   (interactive)
-  (let ((instruction (read-string "Implementation request: "))
-        (context (mp-hikettei--format-region-context)))
-    (if context
+  (let* ((info (mp-hikettei--get-region-info))
+         (instruction (read-string "Implementation request: "))
+         (context (mp-hikettei--format-region-context)))
+    (if (and context info)
         (mp--send-to-ai-chat
          (format "Please implement the following. IMPORTANT: Only modify the code around lines %d-%d in %s. Do not change other parts of the file.\n\n%s\n\nInstructions: %s"
-                 (plist-get mp-hikettei--region-info :start-line)
-                 (plist-get mp-hikettei--region-info :end-line)
-                 (file-name-nondirectory (plist-get mp-hikettei--region-info :file))
+                 (plist-get info :start-line)
+                 (plist-get info :end-line)
+                 (file-name-nondirectory (plist-get info :file))
                  context
                  instruction))
       (mp--send-to-ai-chat (format "Please implement: %s" instruction)))))
@@ -122,7 +151,7 @@
    (propertize " Hikettei " 'face '(:foreground "#282a36" :background "#50fa7b" :weight bold))
    " "
    (propertize "C-c SPC" 'face '(:foreground "#ff79c6" :weight bold))
-   (propertize ":Region " 'face '(:foreground "#6272a4"))
+   (propertize ":Mark/Save " 'face '(:foreground "#6272a4"))
    (propertize "C-c a" 'face '(:foreground "#ff79c6" :weight bold))
    (propertize ":Ask " 'face '(:foreground "#6272a4"))
    (propertize "C-c i" 'face '(:foreground "#ff79c6" :weight bold))
@@ -209,7 +238,7 @@ Shows a helpful welcome buffer with keybinding hints."
           (insert "\n")
           (insert "    ")
           (insert (propertize "C-c SPC" 'face '(:foreground "#ff79c6" :weight bold)))
-          (insert "  Set region for AI operations\n")
+          (insert "  Set mark, then select text, press again to save\n")
           (insert "    ")
           (insert (propertize "C-c a  " 'face '(:foreground "#ff79c6" :weight bold)))
           (insert "  Ask AI about code/region\n")
