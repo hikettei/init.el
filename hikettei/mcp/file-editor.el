@@ -567,12 +567,14 @@ Returns the session ID."
          (with-current-buffer buffer
            (auto-revert-mode 1)
            (file-editor-review-mode 1))
-         ;; Display in Autopilot's file window if available
-         (let ((autopilot-win (and (boundp 'mp--autopilot-file-window)
+         ;; Display in Autopilot's file window ONLY if currently on Autopilot tab
+         (let ((on-autopilot (and (boundp 'mp--current-feat-tab)
+                                  (eq mp--current-feat-tab 'autopilot)))
+               (autopilot-win (and (boundp 'mp--autopilot-file-window)
                                    mp--autopilot-file-window
                                    (window-live-p mp--autopilot-file-window)
                                    mp--autopilot-file-window)))
-           (if autopilot-win
+           (if (and on-autopilot autopilot-win)
                (progn
                  (set-window-buffer autopilot-win buffer)
                  ;; Position without stealing focus
@@ -583,7 +585,7 @@ Returns the session ID."
                  ;; Clear pending flag since we're displaying
                  (when (boundp 'mp--review-pending)
                    (setq mp--review-pending nil)))
-             ;; Not on Autopilot tab - set pending indicator
+             ;; Not on Autopilot tab OR window not available - set pending indicator
              (when (boundp 'mp--review-pending)
                (setq mp--review-pending session)
                ;; Update tab bar to show indicator
