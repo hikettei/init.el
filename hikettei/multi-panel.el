@@ -465,21 +465,54 @@ but excludes NeoTree, AI Chat, and Feat Tab bar."
         (push win result)))
     (nreverse result)))
 
+(defun mp--find-workarea-root ()
+  "Find the root window of the workarea subtree.
+This is the smallest internal (or live) window that contains all workarea windows
+but does not contain any protected windows."
+  (let ((workarea-wins (mp--workarea-windows)))
+    (cond
+     ((null workarea-wins) nil)
+     ((= (length workarea-wins) 1)
+      ;; Only one window, return it directly
+      (car workarea-wins))
+     (t
+      ;; Multiple windows - find common ancestor
+      ;; Start from first window and go up until we find a parent
+      ;; that contains all workarea windows
+      (let ((candidate (car workarea-wins)))
+        (while (and candidate
+                    (not (mp--window-contains-all-p candidate workarea-wins)))
+          (setq candidate (window-parent candidate)))
+        candidate)))))
+
+(defun mp--window-contains-all-p (parent windows)
+  "Return t if PARENT contains all WINDOWS as descendants or equals them."
+  (cl-every (lambda (w)
+              (or (eq w parent)
+                  (let ((p (window-parent w)))
+                    (while (and p (not (eq p parent)))
+                      (setq p (window-parent p)))
+                    (eq p parent))))
+            windows))
+
 (defun mp--save-workarea-state (tab)
   "Save the current WorkArea state into TAB.
-Saves complete window layout including splits using `window-state-get'."
-  (when (and mp--workarea-window (window-live-p mp--workarea-window))
-    (let* ((workarea-wins (mp--workarea-windows))
-           (state (when workarea-wins
-                    (list :window-state (window-state-get mp--workarea-window t)
-                          :buffers (mapcar (lambda (w)
-                                            (list :buffer (window-buffer w)
-                                                  :file (buffer-file-name (window-buffer w))
-                                                  :point (window-point w)
-                                                  :start (window-start w)))
-                                          workarea-wins)
-                          :main-buffer (window-buffer mp--workarea-window)))))
-      (setf (mp-feat-tab-workarea-state tab) state))))
+Saves complete window layout including all splits using `window-state-get'."
+  (let ((workarea-root (mp--find-workarea-root)))
+    (when workarea-root
+      (let* ((workarea-wins (mp--workarea-windows))
+             ;; Save buffer info for restoration validation
+             (buffer-info (mapcar (lambda (w)
+                                   (list :buffer (window-buffer w)
+                                         :file (buffer-file-name (window-buffer w))
+                                         :point (window-point w)
+                                         :start (window-start w)))
+                                 workarea-wins))
+             ;; Save the complete window state from the root
+             (state (list :window-state (window-state-get workarea-root t)
+                          :buffers buffer-info
+                          :root-window-live-p (window-live-p workarea-root))))
+        (setf (mp-feat-tab-workarea-state tab) state)))))
 
 (defun mp--restore-workarea-state (tab)
   "Restore the WorkArea state from TAB.
@@ -488,29 +521,35 @@ Returns t if restoration succeeded, nil if it failed (caller should run setup)."
   (let ((state (mp-feat-tab-workarea-state tab)))
     (if (and state (window-live-p mp--workarea-window))
         (let ((window-state (plist-get state :window-state))
-              (main-buf (plist-get state :main-buffer)))
-          ;; First check if main buffer is still alive
-          (if (and main-buf (buffer-live-p main-buf))
-              (if window-state
-                  ;; Try to restore complete window configuration
-                  (condition-case err
-                      (progn
-                        (window-state-put window-state mp--workarea-window 'safe)
-                        t)  ; success
-                    (error
-                     ;; Fallback: just restore main buffer
-                     (message "Failed to restore window state: %s" err)
-                     (set-window-buffer mp--workarea-window main-buf)
-                     t))  ; partial success
-                ;; No window-state, just restore main buffer
-                (set-window-buffer mp--workarea-window main-buf)
-                t)
-            ;; Main buffer is dead - clear saved state and signal failure
+              (buffer-info (plist-get state :buffers)))
+          ;; Check if at least the main buffers are still alive
+          (if (and window-state
+                   (cl-some (lambda (info)
+                              (let ((buf (plist-get info :buffer)))
+                                (and buf (buffer-live-p buf))))
+                            buffer-info))
+              ;; Try to restore complete window configuration
+              (condition-case err
+                  (progn
+                    ;; First, ensure we have a clean workarea window
+                    (mp--clear-workarea-windows)
+                    (when (window-live-p mp--workarea-window)
+                      (select-window mp--workarea-window)
+                      ;; Restore the window state
+                      (window-state-put window-state mp--workarea-window 'safe)
+                      ;; Update mp--workarea-window to point to first workarea window
+                      (setq mp--workarea-window (car (mp--workarea-windows))))
+                    t)  ; success
+                (error
+                 ;; Restoration failed - clear state and return nil
+                 (message "Failed to restore window state: %s" (error-message-string err))
+                 (setf (mp-feat-tab-workarea-state tab) nil)
+                 nil))
+            ;; All buffers are dead - clear saved state
             (setf (mp-feat-tab-workarea-state tab) nil)
             nil))
       ;; No saved state
       nil)))
-
 
 (defun mp--clear-workarea-windows ()
   "Delete extra windows in WorkArea, keeping only the main one."
@@ -519,7 +558,7 @@ Returns t if restoration succeeded, nil if it failed (caller should run setup)."
     (dolist (win workarea-wins)
       (unless (eq win mp--workarea-window)
         (when (window-live-p win)
-          (delete-window win)))))
+          (ignore-errors (delete-window win))))))
   ;; Ensure workarea window is valid
   (unless (window-live-p mp--workarea-window)
     ;; Try to find a valid workarea window

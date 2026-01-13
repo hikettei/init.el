@@ -137,10 +137,53 @@
     (define-key map (kbd "d") #'mp-memory-delete-at-point)
     (define-key map (kbd "g") #'mp-memory-refresh)
     (define-key map (kbd "q") #'mp-memory-quit)
+    (define-key map (kbd "m") #'mp-memory-markdown-preview)
     (define-key map (kbd "TAB") #'mp-memory-next)
     (define-key map (kbd "<backtab>") #'mp-memory-prev)
     map)
   "Keymap for memory tree mode.")
+
+(defun mp-memory-markdown-preview ()
+  "Open markdown preview for the selected memory's content file."
+  (interactive)
+  (when-let ((id (get-text-property (point) 'memory-id)))
+    (require 'memory)
+    (let ((mem (mcp-memory--get-by-id id)))
+      (when mem
+        (let* ((type (cdr (assoc 'type mem)))
+               (file (cdr (assoc 'file mem))))
+          (cond
+           ((and (string= type "note") file (file-exists-p file))
+            (mp-memory--open-markdown-preview file))
+           ((and file (file-exists-p file) (string-suffix-p ".md" file t))
+            (mp-memory--open-markdown-preview file))
+           (t
+            (message "No markdown file available for this memory"))))))))
+
+(defun mp-memory--open-markdown-preview (file)
+  "Open FILE and trigger markdown preview in the preview window."
+  (let ((target-win (cond
+                     ((and mp-memory--preview-window
+                           (window-live-p mp-memory--preview-window))
+                      mp-memory--preview-window)
+                     ((and (boundp 'mp--workarea-window)
+                           mp--workarea-window
+                           (window-live-p mp--workarea-window))
+                      mp--workarea-window)
+                     (t nil))))
+    (if target-win
+        (with-selected-window target-win
+          (find-file file)
+          (cond
+           ((fboundp 'markdown-live-preview-mode)
+            (markdown-live-preview-mode 1))
+           ((fboundp 'markdown-preview)
+            (markdown-preview))
+           (t
+            (markdown-mode)
+            (message "Opened %s in markdown-mode" (file-name-nondirectory file)))))
+      (find-file-other-window file))))
+
 
 (defun mp-memory--post-command-hook ()
   "Hook to auto-preview on cursor movement."
@@ -192,10 +235,13 @@
                                   'face '(:foreground "#6272a4"))
                       (propertize "  RET - open file/URL\n"
                                   'face '(:foreground "#6272a4"))
+                      (propertize "  m - markdown preview\n"
+                                  'face '(:foreground "#6272a4"))
                       (propertize "  f - cycle filter\n"
                                   'face '(:foreground "#6272a4"))
                       (propertize "  d - delete  g - refresh\n"
                                   'face '(:foreground "#6272a4")))
+
             ;; Render items
             (dolist (mem memories)
               (let* ((id (cdr (assoc 'id mem)))
@@ -215,12 +261,15 @@
             (insert "\n")
             (insert (propertize (make-string 30 ?─) 'face '(:foreground "#44475a")))
             (insert "\n")
-            (insert (propertize " j/k ↑↓" 'face '(:foreground "#6272a4")))
-            (insert (propertize " nav  " 'face '(:foreground "#44475a")))
+            (insert (propertize " j/k" 'face '(:foreground "#6272a4")))
+            (insert (propertize " nav " 'face '(:foreground "#44475a")))
             (insert (propertize "f" 'face '(:foreground "#6272a4")))
-            (insert (propertize " filter  " 'face '(:foreground "#44475a")))
+            (insert (propertize " filter " 'face '(:foreground "#44475a")))
+            (insert (propertize "m" 'face '(:foreground "#ff79c6")))
+            (insert (propertize " md " 'face '(:foreground "#44475a")))
             (insert (propertize "d" 'face '(:foreground "#6272a4")))
             (insert (propertize " del\n" 'face '(:foreground "#44475a")))))
+
         (mp-memory-tree-mode)
         (goto-char (min pos (point-max)))))
     buf))
@@ -528,16 +577,17 @@
 ;;; ============================================================
 
 (defun mp--setup-memory (_session)
-  "Setup Memory panel."
+  "Setup Memory panel.
+Layout: Tree view on top, Preview pane below (vertical split)."
   (when (and mp--workarea-window (window-live-p mp--workarea-window))
     (select-window mp--workarea-window)
     ;; Reset state
     (setq mp-memory--filter-type nil)
     (setq mp-memory--selected-id nil)
-    ;; Split: tree on left (35%), preview on right (65%)
-    (let* ((tree-width (floor (* (window-width) 0.35)))
+    ;; Split: tree on top (40%), preview below (60%)
+    (let* ((tree-height (floor (* (window-height) 0.40)))
            (tree-win (selected-window))
-           (preview-win (split-window-right tree-width)))
+           (preview-win (split-window-below tree-height)))
       (setq mp-memory--tree-window tree-win)
       (setq mp-memory--preview-window preview-win)
       ;; Tree buffer
