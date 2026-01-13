@@ -297,8 +297,26 @@
             (mp-memory-open)))))))
 
 
+(defun mp-memory-close-detail ()
+  "Close the memory detail buffer and return to tree view."
+  (interactive)
+  (let ((buf (current-buffer)))
+    ;; Kill the detail buffer
+    (when (buffer-live-p buf)
+      (kill-buffer buf))
+    ;; Return focus to tree view if available, otherwise switch to memory panel
+    (cond
+     ((and mp-memory--tree-window (window-live-p mp-memory--tree-window))
+      (select-window mp-memory--tree-window))
+     ((and mp--workarea-window (window-live-p mp--workarea-window))
+      ;; Re-setup memory panel
+      (mp--setup-memory (and (boundp 'ai-session--current) ai-session--current)))
+     (t
+      ;; Fallback: switch to memory panel
+      (mp-switch-to 'memory)))))
 
 (defun mp-memory-open ()
+
   "Open the currently selected memory in a new buffer."
   (interactive)
   (when-let ((id (get-text-property (point) 'memory-id)))
@@ -357,7 +375,7 @@
                                           'face '(:foreground "#6272a4" :slant italic)))))
                   (goto-char (point-min)))
                 (special-mode)
-                (local-set-key (kbd "q") #'kill-buffer-and-window))
+                (local-set-key (kbd "q") #'mp-memory-close-detail))
               ;; Display buffer
               (if (and mp--workarea-window (window-live-p mp--workarea-window))
                   (set-window-buffer mp--workarea-window buf)
@@ -537,12 +555,24 @@
 
 (defun mp--teardown-memory (_session)
   "Teardown Memory panel."
+  ;; Delete preview window FIRST (before killing buffers)
+  ;; This ensures mp--workarea-window regains full width
+  (when (and mp-memory--preview-window (window-live-p mp-memory--preview-window))
+    (delete-window mp-memory--preview-window))
+  ;; Kill buffers
   (when (buffer-live-p mp-memory--tree-buffer)
     (kill-buffer mp-memory--tree-buffer))
   (when (buffer-live-p mp-memory--preview-buffer)
     (kill-buffer mp-memory--preview-buffer))
+  ;; Reset all state
   (setq mp-memory--tree-window nil)
-  (setq mp-memory--preview-window nil))
+  (setq mp-memory--preview-window nil)
+  (setq mp-memory--tree-buffer nil)
+  (setq mp-memory--preview-buffer nil)
+  ;; Clear saved workarea state - Memory panel always needs fresh setup
+  ;; because its buffers are killed on teardown
+  (when-let ((tab (gethash 'memory mp--feat-tabs)))
+    (setf (mp-feat-tab-workarea-state tab) nil)))
 
 ;;; ============================================================
 ;;; Registration

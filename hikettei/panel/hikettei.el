@@ -187,18 +187,17 @@ When in multi-panel mode, switch to Hikettei panel and open the file there."
   (if (and (boundp 'mp--current-feat-tab)
            mp--current-feat-tab)
       ;; We're in multi-panel mode
-      (let ((workarea-win (mp-hikettei--find-workarea-window)))
-        (when workarea-win
-          ;; Update current tab to hikettei (without full switch to avoid state corruption)
-          (when (and mp--current-feat-tab
-                     (not (eq mp--current-feat-tab 'hikettei)))
-            (setq mp--current-feat-tab 'hikettei)
-            (mp--update-feat-tab-bar))
-          ;; Open file in workarea window
-          (select-window workarea-win)
-          (find-file full-path)
-          ;; Enable hikettei mode
-          (mp-hikettei-mode 1)))
+      (progn
+        ;; Properly switch to hikettei tab (runs teardown/setup)
+        (unless (eq mp--current-feat-tab 'hikettei)
+          (mp-switch-to 'hikettei))
+        ;; Now open file in workarea window
+        (let ((workarea-win (mp-hikettei--find-workarea-window)))
+          (when workarea-win
+            (select-window workarea-win)
+            (find-file full-path)
+            ;; Enable hikettei mode
+            (mp-hikettei-mode 1))))
     ;; Not in multi-panel mode, use default behavior
     (funcall orig-fn full-path arg)))
 

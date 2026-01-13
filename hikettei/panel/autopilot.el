@@ -170,7 +170,11 @@ SESSION is the current mcp-session."
   
   (when (fboundp 'activity-panel-cleanup)
     (activity-panel-cleanup))
-  (setq mp--autopilot-file-window nil))
+  ;; Clear window reference to prevent stale pointer issues
+  (setq mp--autopilot-file-window nil)
+  ;; Clear saved workarea state - Autopilot should always show fresh status
+  (when-let ((tab (gethash 'autopilot mp--feat-tabs)))
+    (setf (mp-feat-tab-workarea-state tab) nil)))
 
 ;;; ============================================================
 ;;; Review Mode Functions

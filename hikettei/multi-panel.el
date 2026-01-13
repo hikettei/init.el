@@ -479,24 +479,34 @@ Saves complete window layout including splits using `window-state-get'."
 
 (defun mp--restore-workarea-state (tab)
   "Restore the WorkArea state from TAB.
-Restores complete window layout including splits using `window-state-put'."
+Restores complete window layout including splits using `window-state-put'.
+Returns t if restoration succeeded, nil if it failed (caller should run setup)."
   (let ((state (mp-feat-tab-workarea-state tab)))
-    (when (and state (window-live-p mp--workarea-window))
-      (let ((window-state (plist-get state :window-state)))
-        (if window-state
-            ;; Restore complete window configuration
-            (condition-case err
-                (window-state-put window-state mp--workarea-window 'safe)
-              (error
-               ;; Fallback: just restore main buffer
-               (message "Failed to restore window state: %s" err)
-               (let ((main-buf (plist-get state :main-buffer)))
-                 (when (and main-buf (buffer-live-p main-buf))
-                   (set-window-buffer mp--workarea-window main-buf)))))
-          ;; No window-state, try old-style restore
-          (let ((main-buf (plist-get state :main-buffer)))
-            (when (and main-buf (buffer-live-p main-buf))
-              (set-window-buffer mp--workarea-window main-buf))))))))
+    (if (and state (window-live-p mp--workarea-window))
+        (let ((window-state (plist-get state :window-state))
+              (main-buf (plist-get state :main-buffer)))
+          ;; First check if main buffer is still alive
+          (if (and main-buf (buffer-live-p main-buf))
+              (if window-state
+                  ;; Try to restore complete window configuration
+                  (condition-case err
+                      (progn
+                        (window-state-put window-state mp--workarea-window 'safe)
+                        t)  ; success
+                    (error
+                     ;; Fallback: just restore main buffer
+                     (message "Failed to restore window state: %s" err)
+                     (set-window-buffer mp--workarea-window main-buf)
+                     t))  ; partial success
+                ;; No window-state, just restore main buffer
+                (set-window-buffer mp--workarea-window main-buf)
+                t)
+            ;; Main buffer is dead - clear saved state and signal failure
+            (setf (mp-feat-tab-workarea-state tab) nil)
+            nil))
+      ;; No saved state
+      nil)))
+
 
 (defun mp--clear-workarea-windows ()
   "Delete extra windows in WorkArea, keeping only the main one."
@@ -540,15 +550,16 @@ Restores complete window layout including splits using `window-state-put'."
 
       (setq mp--current-feat-tab feat-tab-id)
 
-      ;; Check if tab has saved state to restore
-      (let ((saved-state (mp-feat-tab-workarea-state tab)))
-        (if (and saved-state (plist-get saved-state :window-state))
-            ;; Restore saved window state (preserves splits)
-            (progn
-              (mp--restore-workarea-state tab)
-              (when (window-live-p mp--workarea-window)
-                (select-window mp--workarea-window)))
-          ;; No saved state - clear and setup fresh
+      ;; Try to restore saved state, fallback to fresh setup if failed
+      (let* ((saved-state (mp-feat-tab-workarea-state tab))
+             (restored (and saved-state
+                            (plist-get saved-state :window-state)
+                            (mp--restore-workarea-state tab))))
+        (if restored
+            ;; Restoration succeeded
+            (when (window-live-p mp--workarea-window)
+              (select-window mp--workarea-window))
+          ;; No saved state or restoration failed - clear and setup fresh
           (mp--clear-workarea)
           (when (window-live-p mp--workarea-window)
             (select-window mp--workarea-window))
