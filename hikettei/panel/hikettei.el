@@ -173,13 +173,23 @@ Returns plist with :file :start-line :end-line :content, or nil."
 ;;; ============================================================
 
 (defun mp-hikettei--find-workarea-window ()
-  "Find the actual workarea window (not neotree, ai-chat, or feat-tab-bar)."
+  "Find the workarea window to open files in.
+Prioritizes the last selected workarea window (mp--last-workarea-window),
+then falls back to finding any valid workarea window."
   (let ((excluded (list mp--neotree-window mp--ai-chat-window mp--feat-tab-bar-window)))
-    (cl-find-if (lambda (win)
-                  (and (not (memq win excluded))
-                       (not (window-dedicated-p win))
-                       (not (window-parameter win 'window-side))))
-                (window-list nil 'nomini))))
+    ;; First, try the last selected workarea window
+    (if (and (boundp 'mp--last-workarea-window)
+             (window-live-p mp--last-workarea-window)
+             (not (memq mp--last-workarea-window excluded))
+             (not (window-dedicated-p mp--last-workarea-window))
+             (not (window-parameter mp--last-workarea-window 'window-side)))
+        mp--last-workarea-window
+      ;; Fallback: find any valid workarea window
+      (cl-find-if (lambda (win)
+                    (and (not (memq win excluded))
+                         (not (window-dedicated-p win))
+                         (not (window-parameter win 'window-side))))
+                  (window-list nil 'nomini)))))
 
 (defun mp-hikettei--neo-open-file-advice (orig-fn full-path &optional arg)
   "Advice for neo-open-file to open files in Hikettei panel.

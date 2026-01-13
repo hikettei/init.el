@@ -79,6 +79,7 @@
   :group 'multi-panel)
 
 ;;; ============================================================
+;;; ============================================================
 ;;; State Variables
 ;;; ============================================================
 
@@ -90,6 +91,9 @@
 
 (defvar mp--workarea-window nil
   "Window reference for main WorkArea.")
+
+(defvar mp--last-workarea-window nil
+  "Last selected window in the WorkArea (for neotree file opening).")
 
 (defvar mp--feat-tab-bar-window nil
   "Window reference for the Feat Tab bar.")
@@ -639,6 +643,26 @@ If RESUME is non-nil, resume the agent session."
 
 (define-key mp-prefix-map (kbd "c") #'mp-toggle-ai-chat)
 (define-key mp-prefix-map (kbd "v") #'mcp-voicebox-cycle-mode)
+
+;;; ============================================================
+;;; Window Selection Tracking
+;;; ============================================================
+
+(defun mp--is-workarea-window-p (win)
+  "Return t if WIN is a valid workarea window."
+  (and (window-live-p win)
+       (not (memq win (list mp--neotree-window mp--ai-chat-window mp--feat-tab-bar-window)))
+       (not (window-dedicated-p win))
+       (not (window-parameter win 'window-side))))
+
+(defun mp--track-workarea-window (_frame)
+  "Track the last selected workarea window.
+Added to `window-selection-change-functions'."
+  (let ((win (selected-window)))
+    (when (mp--is-workarea-window-p win)
+      (setq mp--last-workarea-window win))))
+
+(add-hook 'window-selection-change-functions #'mp--track-workarea-window)
 
 ;;; ============================================================
 ;;; Panel Loading
